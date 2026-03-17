@@ -24,6 +24,7 @@ export class FinanceService {
   async createExpense(venueId: string, userId: string, data: Partial<Expense>) {
     const expense = this.expenseRepo.create({
       ...data,
+      title: data.title || data.description || '',
       venueId,
       createdBy: userId,
     });

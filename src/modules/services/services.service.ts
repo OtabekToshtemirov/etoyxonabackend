@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ServiceCategory } from './entities/service-category.entity';
@@ -19,6 +19,30 @@ export class ServicesService {
       where: { isActive: true },
       order: { sortOrder: 'ASC' },
     });
+  }
+
+  async createCategory(data: Partial<ServiceCategory>) {
+    const category = this.categoryRepo.create(data);
+    return this.categoryRepo.save(category);
+  }
+
+  async updateCategory(id: string, data: Partial<ServiceCategory>) {
+    const category = await this.categoryRepo.findOne({ where: { id } });
+    if (!category) throw new NotFoundException('Kategoriya topilmadi');
+    await this.categoryRepo.update(id, data);
+    return this.categoryRepo.findOne({ where: { id } });
+  }
+
+  async removeCategory(id: string) {
+    const category = await this.categoryRepo.findOne({ where: { id } });
+    if (!category) throw new NotFoundException('Kategoriya topilmadi');
+    // Check if any services use this category (including soft-deleted)
+    const count = await this.serviceRepo.count({ where: { categoryId: id }, withDeleted: true });
+    if (count > 0) {
+      throw new BadRequestException(`Bu kategoriyada ${count} ta xizmat bor. Avval xizmatlarni boshqa kategoriyaga o'tkazing.`);
+    }
+    await this.categoryRepo.delete(id);
+    return { message: 'Kategoriya o\'chirildi' };
   }
 
   // ─── Venue Services ──────────────────────────────

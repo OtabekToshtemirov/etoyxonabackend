@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { MenuCategory } from './entities/menu-category.entity';
@@ -39,6 +39,13 @@ export class MenuService {
   }
 
   async removeCategory(id: string) {
+    const category = await this.categoryRepo.findOne({ where: { id } });
+    if (!category) throw new NotFoundException('Kategoriya topilmadi');
+    // Check if any items reference this category (including soft-deleted)
+    const count = await this.itemRepo.count({ where: { categoryId: id }, withDeleted: true });
+    if (count > 0) {
+      throw new BadRequestException(`Bu kategoriyada ${count} ta taom bor. Avval taomlarni boshqa kategoriyaga o'tkazing.`);
+    }
     await this.categoryRepo.delete(id);
     return { message: 'Kategoriya o\'chirildi' };
   }

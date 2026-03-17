@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { ServicesService } from './services.service';
-import { CreateServiceDto, UpdateServiceDto } from './dto';
+import { CreateServiceDto, UpdateServiceDto, CreateServiceCategoryDto, UpdateServiceCategoryDto } from './dto';
 import { JwtAuthGuard, RolesGuard } from '../../common/guards';
 import { Roles } from '../../common/decorators';
 import { Role } from '../../common/enums';
@@ -28,6 +28,30 @@ export class ServicesController {
   @ApiOperation({ summary: 'Xizmat kategoriyalari' })
   async getCategories() {
     return this.servicesService.findCategories();
+  }
+
+  @Post('venues/:venueId/services/categories')
+  @Roles(Role.OWNER, Role.MANAGER)
+  @ApiOperation({ summary: 'Yangi xizmat kategoriyasi' })
+  async createCategory(@Body() data: CreateServiceCategoryDto) {
+    return this.servicesService.createCategory(data);
+  }
+
+  @Patch('venues/:venueId/services/categories/:id')
+  @Roles(Role.OWNER, Role.MANAGER)
+  @ApiOperation({ summary: 'Xizmat kategoriyasini tahrirlash' })
+  async updateCategory(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() data: UpdateServiceCategoryDto,
+  ) {
+    return this.servicesService.updateCategory(id, data);
+  }
+
+  @Delete('venues/:venueId/services/categories/:id')
+  @Roles(Role.OWNER, Role.MANAGER)
+  @ApiOperation({ summary: 'Xizmat kategoriyasini o\'chirish' })
+  async removeCategory(@Param('id', ParseUUIDPipe) id: string) {
+    return this.servicesService.removeCategory(id);
   }
 
   @Post('venues/:venueId/services')

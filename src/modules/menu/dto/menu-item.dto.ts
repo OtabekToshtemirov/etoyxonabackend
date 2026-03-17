@@ -45,6 +45,11 @@ export class CreateMenuItemDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsBoolean()
+  isAvailable?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsNumber()
   sortOrder?: number;
 }

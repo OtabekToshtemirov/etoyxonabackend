@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, In } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Booking } from './entities/booking.entity';
 import { BookingMenuItem } from './entities/booking-menu-item.entity';
 import { BookingService } from './entities/booking-service.entity';
@@ -254,6 +254,44 @@ export class BookingsService {
 
   async update(id: string, data: Partial<Booking>) {
     const booking = await this.findOne(id);
+
+    // Agar mehmonlar soni yoki narxlar o'zgarsa, qayta hisoblash
+    const guestCount = (data as any).guestCount ?? booking.guestCount;
+    const hallPricePerPerson = (data as any).hallPricePerPerson ?? Number(booking.hallPricePerPerson);
+    const menuPricePerPerson = (data as any).menuPricePerPerson ?? (Number(booking.menuPricePerPerson) || 0);
+    const servicesTotal = (data as any).servicesTotal ?? Number(booking.servicesTotal);
+    const discountAmount = (data as any).discountAmount ?? Number(booking.discountAmount);
+
+    const needsRecalc = (data as any).guestCount !== undefined ||
+      (data as any).hallPricePerPerson !== undefined ||
+      (data as any).menuPricePerPerson !== undefined ||
+      (data as any).servicesTotal !== undefined ||
+      (data as any).discountAmount !== undefined;
+
+    if (needsRecalc) {
+      const menuTotal = menuPricePerPerson * guestCount;
+      const subtotal = (hallPricePerPerson * guestCount) + menuTotal + servicesTotal;
+      const totalAmount = subtotal - discountAmount;
+      const paidAmount = Number(booking.paidAmount) || 0;
+
+      (data as any).menuTotal = menuTotal;
+      (data as any).subtotal = subtotal;
+      (data as any).totalAmount = totalAmount;
+      (data as any).remainingAmount = totalAmount - paidAmount;
+
+      // Mijoz statistikasini yangilash (eski totalAmount - yangi totalAmount)
+      if (booking.clientId) {
+        const diff = totalAmount - Number(booking.totalAmount);
+        if (diff !== 0) {
+          if (diff > 0) {
+            await this.clientRepo.increment({ id: booking.clientId }, 'totalSpent', diff);
+          } else {
+            await this.clientRepo.decrement({ id: booking.clientId }, 'totalSpent', Math.abs(diff));
+          }
+        }
+      }
+    }
+
     Object.assign(booking, data);
     return this.bookingRepo.save(booking);
   }
@@ -283,9 +321,7 @@ export class BookingsService {
 
     // Agar to'lov bo'lgan bo'lsa va refund so'ralsa — qaytarish yozuvi yaratiladi
     if (dto.refund && paidAmount > 0) {
-      const year = new Date().getFullYear();
-      const count = await this.paymentRepo.count();
-      const paymentNumber = `PAY-${year}-${String(count + 1).padStart(4, '0')}`;
+      const paymentNumber = await this.generateRefundPaymentNumber();
 
       refundPayment = this.paymentRepo.create({
         paymentNumber,
@@ -305,6 +341,12 @@ export class BookingsService {
 
       booking.paidAmount = 0;
       booking.remainingAmount = Number(booking.totalAmount);
+    }
+
+    // Mijoz statistikasini yangilash
+    if (booking.clientId) {
+      await this.clientRepo.decrement({ id: booking.clientId }, 'totalBookings', 1);
+      await this.clientRepo.decrement({ id: booking.clientId }, 'totalSpent', Number(booking.totalAmount));
     }
 
     booking.status = 'cancelled';
@@ -351,22 +393,90 @@ export class BookingsService {
     hallId: string,
     eventDate: string,
     timeSlot: string,
+    excludeBookingId?: string,
   ): Promise<boolean> {
-    const existing = await this.bookingRepo.findOne({
-      where: {
-        hallId,
-        eventDate,
-        timeSlot,
-        status: Not(In(['cancelled'])),
-      },
-    });
+    // Yangi bron vaqtini aniqlash
+    let newStart: string;
+    let newEnd: string;
+    if (timeSlot === 'custom') {
+      // custom uchun alohida tekshiriladi (startTime/endTime bilan)
+      // Bu yerda faqat slot-based tekshirish
+      newStart = '00:00';
+      newEnd = '23:59';
+    } else if (TIME_SLOT_MAP[timeSlot]) {
+      newStart = TIME_SLOT_MAP[timeSlot].start;
+      newEnd = TIME_SLOT_MAP[timeSlot].end;
+    } else {
+      newStart = '00:00';
+      newEnd = '23:59';
+    }
 
-    return !existing;
+    // Shu sana va zalda mavjud bronlarni olish
+    const qb = this.bookingRepo
+      .createQueryBuilder('booking')
+      .where('booking.hallId = :hallId', { hallId })
+      .andWhere('booking.eventDate = :eventDate', { eventDate })
+      .andWhere('booking.status NOT IN (:...statuses)', {
+        statuses: ['cancelled'],
+      });
+
+    if (excludeBookingId) {
+      qb.andWhere('booking.id != :excludeBookingId', { excludeBookingId });
+    }
+
+    const existingBookings = await qb.getMany();
+
+    // Vaqt overlap tekshirish
+    for (const existing of existingBookings) {
+      let existStart: string;
+      let existEnd: string;
+      if (existing.timeSlot === 'custom') {
+        existStart = existing.startTime || '00:00';
+        existEnd = existing.endTime || '23:59';
+      } else if (TIME_SLOT_MAP[existing.timeSlot]) {
+        existStart = TIME_SLOT_MAP[existing.timeSlot].start;
+        existEnd = TIME_SLOT_MAP[existing.timeSlot].end;
+      } else {
+        existStart = existing.startTime || '00:00';
+        existEnd = existing.endTime || '23:59';
+      }
+
+      // Overlap: newStart < existEnd AND newEnd > existStart
+      if (newStart < existEnd && newEnd > existStart) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private async generateRefundPaymentNumber(): Promise<string> {
+    const year = new Date().getFullYear();
+    const lastPayment = await this.paymentRepo.findOne({
+      where: {},
+      order: { createdAt: 'DESC' },
+      withDeleted: true,
+    });
+    let nextNum = 1;
+    if (lastPayment?.paymentNumber) {
+      const match = lastPayment.paymentNumber.match(/PAY-\d+-(\d+)/);
+      if (match) nextNum = parseInt(match[1], 10) + 1;
+    }
+    return `PAY-${year}-${String(nextNum).padStart(4, '0')}`;
   }
 
   private async generateBookingNumber(): Promise<string> {
     const year = new Date().getFullYear();
-    const count = await this.bookingRepo.count();
-    return `BK-${year}-${String(count + 1).padStart(4, '0')}`;
+    const lastBooking = await this.bookingRepo.findOne({
+      where: {},
+      order: { createdAt: 'DESC' },
+      withDeleted: true,
+    });
+    let nextNum = 1;
+    if (lastBooking?.bookingNumber) {
+      const match = lastBooking.bookingNumber.match(/BK-\d+-(\d+)/);
+      if (match) nextNum = parseInt(match[1], 10) + 1;
+    }
+    return `BK-${year}-${String(nextNum).padStart(4, '0')}`;
   }
 }

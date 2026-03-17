@@ -64,10 +64,12 @@ export class PaymentsController {
     @Param('venueId', ParseUUIDPipe) venueId: string,
     @Query('bookingId') bookingId?: string,
     @Query('status') status?: string,
+    @Query('paymentMethod') paymentMethod?: string,
   ) {
     return this.paymentsService.findAllByVenue(venueId, {
       bookingId,
       status,
+      paymentMethod,
     });
   }
 

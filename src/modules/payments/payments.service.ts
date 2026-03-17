@@ -70,8 +70,19 @@ export class PaymentsService {
 
     if (!booking) throw new NotFoundException('Buyurtma topilmadi');
 
-    if (booking.remainingAmount <= 0) {
+    const isRefund = (data.paymentType || 'payment') === 'refund';
+    const remainingAmount = Number(booking.remainingAmount) || 0;
+
+    // Refund bo'lmasa, to'liq to'langanini tekshirish
+    if (!isRefund && remainingAmount <= 0) {
       throw new BadRequestException('Bu buyurtma to\'liq to\'langan');
+    }
+
+    // Ortiqcha to'lov qilmaslik (refund bo'lmasa)
+    if (!isRefund && Number(data.amount) > remainingAmount) {
+      throw new BadRequestException(
+        `To'lov summasi qoldiq summadan oshib ketdi. Qoldiq: ${remainingAmount}`,
+      );
     }
 
     const paymentNumber = await this.generatePaymentNumber();
@@ -98,32 +109,43 @@ export class PaymentsService {
 
     // Update booking amounts
     if (savedPayment.status === 'completed') {
-      const amountInBookingCurrency = savedPayment.amountInBase || savedPayment.amount;
-      booking.paidAmount = Number(booking.paidAmount) + Number(amountInBookingCurrency);
+      const amountInBookingCurrency = Number(savedPayment.amountInBase || savedPayment.amount);
+
+      if (isRefund) {
+        // Refund — paidAmount dan ayirish
+        booking.paidAmount = Number(booking.paidAmount) - amountInBookingCurrency;
+        if (Number(booking.paidAmount) < 0) booking.paidAmount = 0;
+      } else {
+        // Oddiy to'lov — paidAmount ga qo'shish
+        booking.paidAmount = Number(booking.paidAmount) + amountInBookingCurrency;
+      }
+
       booking.remainingAmount = Number(booking.totalAmount) - Number(booking.paidAmount);
 
       if (booking.remainingAmount <= 0) {
         booking.status = 'fully_paid';
         booking.remainingAmount = 0;
-      } else if (booking.status === 'pending') {
+      } else if (Number(booking.paidAmount) > 0 && booking.status === 'pending') {
         booking.status = 'deposit_paid';
       }
 
       await this.bookingRepo.save(booking);
 
-      const client = await this.clientRepo.findOne({ where: { id: booking.clientId }});
-      if (client && client.phone) {
-          const formattedAmount = Number(data.amount).toLocaleString('uz-UZ') + ' ' + (data.currency || booking.currency);
-          const formattedRemaining = Number(booking.remainingAmount).toLocaleString('uz-UZ') + ' ' + (data.currency || booking.currency);
-          
-          let msg = `Hurmatli ${client.fullName}! Sizning ${booking.bookingNumber} brongiz hisobiga ${formattedAmount} to'lov qabul qilindi. `;
-          
-          if (booking.remainingAmount > 0) {
-              msg += `Qoldiq qarzingiz: ${formattedRemaining}.`;
-          } else {
-              msg += `To'lov toliq to'landi.`;
-          }
-          await this.smsService.sendSms(client.phone, msg);
+      if (!isRefund) {
+        const client = await this.clientRepo.findOne({ where: { id: booking.clientId }});
+        if (client && client.phone) {
+            const formattedAmount = Number(data.amount).toLocaleString('ru-RU') + ' ' + (data.currency || booking.currency);
+            const formattedRemaining = Number(booking.remainingAmount).toLocaleString('ru-RU') + ' ' + (data.currency || booking.currency);
+            
+            let msg = `Hurmatli ${client.fullName}! Sizning ${booking.bookingNumber} brongiz hisobiga ${formattedAmount} to'lov qabul qilindi. `;
+            
+            if (booking.remainingAmount > 0) {
+                msg += `Qoldiq qarzingiz: ${formattedRemaining}.`;
+            } else {
+                msg += `To'lov toliq to'landi.`;
+            }
+            await this.smsService.sendSms(client.phone, msg);
+        }
       }
     }
 
@@ -147,6 +169,10 @@ export class PaymentsService {
       qb.andWhere('payment.status = :status', { status: filters.status });
     }
 
+    if (filters?.paymentMethod) {
+      qb.andWhere('payment.paymentMethod = :paymentMethod', { paymentMethod: filters.paymentMethod });
+    }
+
     qb.orderBy('payment.createdAt', 'DESC');
 
     return qb.getMany();
@@ -168,24 +194,56 @@ export class PaymentsService {
     const payment = await this.findOne(id, venueId);
 
     const wasCompleted = payment.status === 'completed';
+    const oldAmount = Number(payment.amountInBase || payment.amount);
+    const isRefund = payment.paymentType === 'refund';
     Object.assign(payment, data);
 
-    // Agar status completed ga o'zgarsa
+    const booking = await this.bookingRepo.findOne({
+      where: { id: payment.bookingId },
+    });
+
+    // Status: pending/failed → completed (pul qo'shiladi)
     if (!wasCompleted && payment.status === 'completed') {
       payment.paidAt = new Date();
 
-      const booking = await this.bookingRepo.findOne({
-        where: { id: payment.bookingId },
-      });
       if (booking) {
-        const amountInBase = payment.amountInBase || payment.amount;
-        booking.paidAmount = Number(booking.paidAmount) + Number(amountInBase);
+        const amountInBase = Number(payment.amountInBase || payment.amount);
+        if (isRefund) {
+          booking.paidAmount = Number(booking.paidAmount) - amountInBase;
+          if (Number(booking.paidAmount) < 0) booking.paidAmount = 0;
+        } else {
+          booking.paidAmount = Number(booking.paidAmount) + amountInBase;
+        }
         booking.remainingAmount = Number(booking.totalAmount) - Number(booking.paidAmount);
         if (booking.remainingAmount <= 0) {
           booking.status = 'fully_paid';
           booking.remainingAmount = 0;
-        } else if (booking.status === 'pending') {
+        } else if (Number(booking.paidAmount) > 0 && booking.status === 'pending') {
           booking.status = 'deposit_paid';
+        }
+        await this.bookingRepo.save(booking);
+      }
+    }
+
+    // Status: completed → failed/refunded (pul qaytariladi)
+    if (wasCompleted && ['failed', 'refunded'].includes(payment.status)) {
+      if (booking) {
+        if (isRefund) {
+          // Refund bekor qilindi — pulni qaytarish
+          booking.paidAmount = Number(booking.paidAmount) + oldAmount;
+        } else {
+          // Oddiy to'lov bekor bo'ldi — pulni ayirish
+          booking.paidAmount = Number(booking.paidAmount) - oldAmount;
+          if (Number(booking.paidAmount) < 0) booking.paidAmount = 0;
+        }
+        booking.remainingAmount = Number(booking.totalAmount) - Number(booking.paidAmount);
+        if (booking.remainingAmount <= 0) {
+          booking.status = 'fully_paid';
+          booking.remainingAmount = 0;
+        } else if (Number(booking.paidAmount) > 0) {
+          booking.status = 'deposit_paid';
+        } else {
+          booking.status = 'pending';
         }
         await this.bookingRepo.save(booking);
       }
@@ -209,7 +267,16 @@ export class PaymentsService {
 
   private async generatePaymentNumber(): Promise<string> {
     const year = new Date().getFullYear();
-    const count = await this.paymentRepo.count();
-    return `PAY-${year}-${String(count + 1).padStart(4, '0')}`;
+    const lastPayment = await this.paymentRepo.findOne({
+      where: {},
+      order: { createdAt: 'DESC' },
+      withDeleted: true,
+    });
+    let nextNum = 1;
+    if (lastPayment?.paymentNumber) {
+      const match = lastPayment.paymentNumber.match(/PAY-\d+-(\d+)/);
+      if (match) nextNum = parseInt(match[1], 10) + 1;
+    }
+    return `PAY-${year}-${String(nextNum).padStart(4, '0')}`;
   }
 }

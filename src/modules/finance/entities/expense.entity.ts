@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
   ManyToOne,
   JoinColumn,
   Index,
@@ -67,6 +68,9 @@ export class Expense {
 
   @UpdateDateColumn({ type: 'timestamp with time zone', name: 'updated_at' })
   updatedAt: Date;
+
+  @DeleteDateColumn({ type: 'timestamp with time zone', name: 'deleted_at' })
+  deletedAt: Date;
 
   // Relations
   @ManyToOne(() => Venue)
