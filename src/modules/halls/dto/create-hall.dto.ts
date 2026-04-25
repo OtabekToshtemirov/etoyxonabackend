@@ -34,20 +34,15 @@ export class CreateHallDto {
   @Min(1)
   maxCapacity: number;
 
-  @ApiPropertyOptional({ example: 150000 })
+  @ApiPropertyOptional({ example: 5000000, description: 'Zal umumiy narxi (soatga yoki tadbirga)' })
   @IsOptional()
   @IsNumber()
-  pricePerPerson?: number;
+  hallPrice?: number;
 
   @ApiPropertyOptional({ enum: Currency, default: Currency.UZS })
   @IsOptional()
   @IsEnum(Currency)
   priceCurrency?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsNumber()
-  minimumAmount?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

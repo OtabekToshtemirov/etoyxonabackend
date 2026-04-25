@@ -45,16 +45,7 @@ export class VenuePackage {
   })
   priceCurrency: string;
 
-  // Tarkibiy narxlar
-  @Column({
-    type: 'decimal',
-    precision: 15,
-    scale: 2,
-    default: 0,
-    name: 'hall_price_per_person',
-  })
-  hallPricePerPerson: number;
-
+  // Tarkibiy narxlar (faqat menyu narxi qoldi)
   @Column({
     type: 'decimal',
     precision: 15,
@@ -68,9 +59,6 @@ export class VenuePackage {
   @Index()
   @Column({ type: 'varchar', length: 20, default: 'standard' })
   tier: string; // economy, standard, premium, vip
-
-  @Column({ type: 'integer', default: 50, name: 'min_guests' })
-  minGuests: number;
 
   @Column({ type: 'integer', nullable: true, name: 'max_guests' })
   maxGuests: number;

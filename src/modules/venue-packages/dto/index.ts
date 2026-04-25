@@ -74,12 +74,6 @@ export class CreateVenuePackageDto {
   @IsString()
   priceCurrency?: string;
 
-  @ApiPropertyOptional({ description: 'Zal narxi (1 kishi)' })
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  hallPricePerPerson?: number;
-
   @ApiPropertyOptional({ description: 'Menyu narxi (1 kishi)' })
   @IsOptional()
   @IsNumber()
@@ -90,12 +84,6 @@ export class CreateVenuePackageDto {
   @IsOptional()
   @IsString()
   tier?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  minGuests?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

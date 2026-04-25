@@ -18,6 +18,8 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { VenuePackagesModule } from './modules/venue-packages/venue-packages.module';
 import { SmsModule } from './modules/sms/sms.module';
+import { EventTypesModule } from './modules/event-types/event-types.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PaymeModule } from './modules/payments/payme/payme.module';
 import { ClickModule } from './modules/payments/click/click.module';
 
@@ -67,6 +69,8 @@ import { ClickModule } from './modules/payments/click/click.module';
     AdminModule,
     VenuePackagesModule,
     SmsModule,
+    EventTypesModule,
+    AnalyticsModule,
 
     // Payment Providers
     PaymeModule,

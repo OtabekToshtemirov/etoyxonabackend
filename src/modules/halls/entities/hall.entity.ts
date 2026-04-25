@@ -37,24 +37,15 @@ export class Hall {
   // Narxlash
   @Column({
     type: 'decimal',
-    precision: 12,
+    precision: 15,
     scale: 2,
-    name: 'price_per_person',
+    name: 'hall_price',
     default: 0,
   })
-  pricePerPerson: number;
+  hallPrice: number;
 
   @Column({ type: 'varchar', length: 3, default: 'UZS', name: 'price_currency' })
   priceCurrency: string;
-
-  @Column({
-    type: 'decimal',
-    precision: 15,
-    scale: 2,
-    nullable: true,
-    name: 'minimum_amount',
-  })
-  minimumAmount: number;
 
   // Xususiyatlar
   @Column({ type: 'decimal', precision: 8, scale: 2, nullable: true, name: 'area_sqm' })

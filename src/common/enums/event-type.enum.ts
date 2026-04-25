@@ -1,8 +1,8 @@
 export enum EventType {
   WEDDING = 'wedding',
-  ENGAGEMENT = 'engagement',
-  BIRTHDAY = 'birthday',
-  CONFERENCE = 'conference',
-  CORPORATE = 'corporate',
-  OTHER = 'other',
+  SUNNAT_TOY = 'sunnat_toy',
+  OSH = 'osh',
+  TADBIR = 'tadbir',
+  KORPORATIV = 'korporativ',
+  BAZM = 'bazm',
 }

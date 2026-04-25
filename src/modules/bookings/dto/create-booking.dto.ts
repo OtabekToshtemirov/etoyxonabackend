@@ -131,10 +131,10 @@ export class CreateBookingDto {
   @IsNumber()
   menuPricePerPerson?: number;
 
-  @ApiPropertyOptional({ example: 150000 })
+  @ApiPropertyOptional({ example: 5000000, description: 'Zal umumiy narxi (soatga yoki tadbirga)' })
   @IsOptional()
   @IsNumber()
-  hallPricePerPerson?: number;
+  hallPrice?: number;
 
   @ApiPropertyOptional({ enum: Currency, default: Currency.UZS })
   @IsOptional()

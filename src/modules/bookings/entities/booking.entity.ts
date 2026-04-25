@@ -101,11 +101,12 @@ export class Booking {
 
   @Column({
     type: 'decimal',
-    precision: 12,
+    precision: 15,
     scale: 2,
-    name: 'hall_price_per_person',
+    default: 0,
+    name: 'hall_price',
   })
-  hallPricePerPerson: number;
+  hallPrice: number;
 
   @Column({
     type: 'decimal',

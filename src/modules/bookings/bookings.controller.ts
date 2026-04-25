@@ -67,29 +67,38 @@ export class BookingsController {
     @Query('hallId') hallId: string,
     @Query('eventDate') eventDate: string,
     @Query('timeSlot') timeSlot: string,
+    @Query('customStartTime') customStartTime?: string,
+    @Query('customEndTime') customEndTime?: string,
   ) {
     const available = await this.bookingsService.checkAvailability(
       hallId,
       eventDate,
       timeSlot,
+      undefined,
+      customStartTime,
+      customEndTime,
     );
     return { available };
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Buyurtma tafsilotlari' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.bookingsService.findOne(id);
+  async findOne(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.bookingsService.findOne(id, venueId);
   }
 
   @Patch(':id')
   @Roles(Role.OWNER, Role.MANAGER)
   @ApiOperation({ summary: 'Buyurtmani tahrirlash' })
   async update(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() data: UpdateBookingDto,
   ) {
-    return this.bookingsService.update(id, data as any);
+    return this.bookingsService.update(venueId, id, data as any);
   }
 
   @Delete(':id')
@@ -106,10 +115,11 @@ export class BookingsController {
   @Roles(Role.OWNER, Role.MANAGER)
   @ApiOperation({ summary: 'Buyurtmani bekor qilish' })
   async cancel(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser('sub') userId: string,
     @Body() dto: CancelBookingDto,
   ) {
-    return this.bookingsService.cancel(id, dto, userId);
+    return this.bookingsService.cancel(venueId, id, dto, userId);
   }
 }

@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { Booking } from './entities/booking.entity';
 import { BookingMenuItem } from './entities/booking-menu-item.entity';
 import { BookingService } from './entities/booking-service.entity';
@@ -22,6 +22,35 @@ const TIME_SLOT_MAP: Record<string, { start: string; end: string }> = {
   full_day: { start: '08:00', end: '23:00' },
 };
 
+function timeToMinutes(time: string): number {
+  if (!time || typeof time !== 'string') return 0;
+  const parts = time.split(':');
+  const h = parseInt(parts[0], 10) || 0;
+  const m = parseInt(parts[1], 10) || 0;
+  return h * 60 + m;
+}
+
+function resolveTimeRange(
+  timeSlot: string,
+  startTime?: string,
+  endTime?: string,
+): { start: number; end: number } {
+  if (timeSlot === 'custom') {
+    return {
+      start: timeToMinutes(startTime || '00:00'),
+      end: timeToMinutes(endTime || '23:59'),
+    };
+  }
+  const slot = TIME_SLOT_MAP[timeSlot];
+  if (slot) {
+    return { start: timeToMinutes(slot.start), end: timeToMinutes(slot.end) };
+  }
+  return {
+    start: timeToMinutes(startTime || '00:00'),
+    end: timeToMinutes(endTime || '23:59'),
+  };
+}
+
 @Injectable()
 export class BookingsService {
   constructor(
@@ -37,150 +66,190 @@ export class BookingsService {
     private readonly clientRepo: Repository<Client>,
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
+    private readonly dataSource: DataSource,
     private readonly smsService: SmsService,
   ) {}
 
   async create(venueId: string, userId: string, data: any) {
-    // Check hall availability
-    const isAvailable = await this.checkAvailability(
-      data.hallId,
-      data.eventDate,
-      data.timeSlot,
-    );
+    const savedBooking = await this.dataSource.transaction(async (manager) => {
+      const bookingRepo = manager.getRepository(Booking);
 
-    if (!isAvailable) {
-      throw new BadRequestException(
-        'Bu sana va vaqtda zal band. Boshqa vaqt tanlang.',
+      // Pessimistic lock: shu zal va shu sanadagi bronlarni bloklaymiz
+      const existingBookings = await bookingRepo
+        .createQueryBuilder('booking')
+        .where('booking.hallId = :hallId', { hallId: data.hallId })
+        .andWhere('booking.eventDate = :eventDate', {
+          eventDate: data.eventDate,
+        })
+        .andWhere('booking.status != :cancelled', { cancelled: 'cancelled' })
+        .setLock('pessimistic_write')
+        .getMany();
+
+      // Yangi bron vaqtini aniqlash
+      const newRange = resolveTimeRange(
+        data.timeSlot,
+        data.customStartTime,
+        data.customEndTime,
       );
-    }
 
-    // Resolve client from phone + name if no clientId
-    let clientId = data.clientId;
-    if (!clientId && data.clientPhone) {
-      let client = await this.clientRepo.findOne({
-        where: { phone: data.clientPhone, venueId },
-      });
-      if (!client) {
-        client = this.clientRepo.create({
-          venueId,
-          phone: data.clientPhone,
-          fullName: data.clientFullName || 'Noma\'lum',
-          source: 'phone',
-        });
-        client = await this.clientRepo.save(client);
+      // Overlap tekshirish
+      for (const existing of existingBookings) {
+        const existRange = resolveTimeRange(
+          existing.timeSlot,
+          existing.startTime,
+          existing.endTime,
+        );
+        if (newRange.start < existRange.end && newRange.end > existRange.start) {
+          throw new BadRequestException(
+            'Bu sana va vaqtda zal band. Boshqa vaqt tanlang.',
+          );
+        }
       }
-      clientId = client.id;
-    }
 
-    // Resolve hall price
-    const hall = await this.hallRepo.findOne({ where: { id: data.hallId } });
-    const hallPricePerPerson = data.hallPricePerPerson ?? (hall ? Number(hall.pricePerPerson) : 0);
+      // Mijozni aniqlash (agar yangi bo'lsa yaratish)
+      let clientId = data.clientId;
+      if (!clientId && data.clientPhone) {
+        const clientRepo = manager.getRepository(Client);
+        let client = await clientRepo.findOne({
+          where: { phone: data.clientPhone, venueId },
+        });
+        if (!client) {
+          client = clientRepo.create({
+            venueId,
+            phone: data.clientPhone,
+            fullName: data.clientFullName || "Noma'lum",
+            source: 'phone',
+          });
+          client = await clientRepo.save(client);
+        }
+        clientId = client.id;
+      }
 
-    // Resolve time
-    let startTime = data.startTime;
-    let endTime = data.endTime;
-    if (data.timeSlot === 'custom') {
-      startTime = data.customStartTime || '08:00';
-      endTime = data.customEndTime || '23:00';
-    } else if (!startTime && TIME_SLOT_MAP[data.timeSlot]) {
-      startTime = TIME_SLOT_MAP[data.timeSlot].start;
-      endTime = TIME_SLOT_MAP[data.timeSlot].end;
-    }
+      // Zal narxi
+      const hallRepo = manager.getRepository(Hall);
+      const hall = await hallRepo.findOne({ where: { id: data.hallId } });
+      const hallPrice = data.hallPrice ?? (hall ? Number(hall.hallPrice) : 0);
 
-    // Calculate services total
-    let servicesTotal = data.servicesTotal || 0;
-    if (data.services?.length) {
-      servicesTotal = data.services.reduce(
-        (sum: number, s: { quantity: number; unitPrice: number }) =>
-          sum + s.quantity * s.unitPrice,
-        0,
-      );
-    }
+      // Vaqt
+      let startTime = data.startTime;
+      let endTime = data.endTime;
+      if (data.timeSlot === 'custom') {
+        startTime = data.customStartTime || '08:00';
+        endTime = data.customEndTime || '23:00';
+      } else if (!startTime && TIME_SLOT_MAP[data.timeSlot]) {
+        startTime = TIME_SLOT_MAP[data.timeSlot].start;
+        endTime = TIME_SLOT_MAP[data.timeSlot].end;
+      }
 
-    // Generate booking number
-    const bookingNumber = await this.generateBookingNumber();
+      // Xizmatlar
+      let servicesTotal = data.servicesTotal || 0;
+      if (data.services?.length) {
+        servicesTotal = data.services.reduce(
+          (sum: number, s: { quantity: number; unitPrice: number }) =>
+            sum + s.quantity * s.unitPrice,
+          0,
+        );
+      }
 
-    // Calculate totals
-    const menuTotal = (data.menuPricePerPerson || 0) * data.guestCount;
-    const subtotal = (hallPricePerPerson * data.guestCount) + menuTotal + servicesTotal;
-    const discountAmount = data.discountAmount || 0;
-    const totalAmount = subtotal - discountAmount;
+      const bookingNumber = await this.generateBookingNumber(manager);
+      const menuTotal = (data.menuPricePerPerson || 0) * data.guestCount;
+      const subtotal = hallPrice + menuTotal + servicesTotal;
+      const discountAmount = data.discountAmount || 0;
+      const totalAmount = subtotal - discountAmount;
 
-    const booking = this.bookingRepo.create({
-      bookingNumber,
-      venueId,
-      createdBy: userId,
-      hallId: data.hallId,
-      clientId,
-      eventDate: data.eventDate,
-      timeSlot: data.timeSlot,
-      startTime,
-      endTime,
-      guestCount: data.guestCount,
-      eventType: data.eventType || 'wedding',
-      venuePackageId: data.venuePackageId,
-      menuPackageId: data.menuPackageId,
-      menuPricePerPerson: data.menuPricePerPerson,
-      currency: data.currency || 'UZS',
-      exchangeRate: data.exchangeRate,
-      hallPricePerPerson,
-      servicesTotal,
-      menuTotal,
-      subtotal,
-      discountAmount,
-      discountReason: data.discountReason,
-      totalAmount,
-      remainingAmount: totalAmount,
-      notes: data.notes,
-      internalNotes: data.internalNotes,
+      const booking = bookingRepo.create({
+        bookingNumber,
+        venueId,
+        createdBy: userId,
+        hallId: data.hallId,
+        clientId,
+        eventDate: data.eventDate,
+        timeSlot: data.timeSlot,
+        startTime,
+        endTime,
+        guestCount: data.guestCount,
+        eventType: data.eventType || 'wedding',
+        venuePackageId: data.venuePackageId,
+        menuPackageId: data.menuPackageId,
+        menuPricePerPerson: data.menuPricePerPerson,
+        currency: data.currency || 'UZS',
+        exchangeRate: data.exchangeRate,
+        hallPrice,
+        servicesTotal,
+        menuTotal,
+        subtotal,
+        discountAmount,
+        discountReason: data.discountReason,
+        totalAmount,
+        remainingAmount: totalAmount,
+        notes: data.notes,
+        internalNotes: data.internalNotes,
+      });
+
+      const saved = await bookingRepo.save(booking);
+
+      if (clientId) {
+        const clientRepo = manager.getRepository(Client);
+        await clientRepo.increment({ id: clientId }, 'totalBookings', 1);
+        await clientRepo.increment({ id: clientId }, 'totalSpent', totalAmount);
+      }
+
+      if (data.menuItems?.length) {
+        const menuItemRepo = manager.getRepository(BookingMenuItem);
+        const bookingMenuItems = data.menuItems.map(
+          (item: {
+            menuItemId: string;
+            quantity: number;
+            pricePerPerson: number;
+          }) =>
+            menuItemRepo.create({
+              bookingId: saved.id,
+              menuItemId: item.menuItemId,
+              quantity: item.quantity,
+              pricePerPerson: item.pricePerPerson,
+              totalPrice: item.quantity * item.pricePerPerson,
+            }),
+        );
+        await menuItemRepo.save(bookingMenuItems);
+      }
+
+      if (data.services?.length) {
+        const serviceRepo = manager.getRepository(BookingService);
+        const bookingServices = data.services.map(
+          (s: {
+            venueServiceId: string;
+            quantity: number;
+            unitPrice: number;
+          }) =>
+            serviceRepo.create({
+              bookingId: saved.id,
+              venueServiceId: s.venueServiceId,
+              pricingType: 'fixed',
+              unitPrice: s.unitPrice,
+              quantity: s.quantity,
+              totalPrice: s.quantity * s.unitPrice,
+              status: 'confirmed',
+            }),
+        );
+        await serviceRepo.save(bookingServices);
+      }
+
+      return saved;
     });
 
-    const savedBooking = await this.bookingRepo.save(booking);
-
-    // Increment client totalBookings
-    if (clientId) {
-      await this.clientRepo.increment({ id: clientId }, 'totalBookings', 1);
-      await this.clientRepo.increment({ id: clientId }, 'totalSpent', totalAmount);
-    }
-
-    // Save booking menu items
-    if (data.menuItems?.length) {
-      const bookingMenuItems = data.menuItems.map(
-        (item: { menuItemId: string; quantity: number; pricePerPerson: number }) =>
-          this.bookingMenuItemRepo.create({
-            bookingId: savedBooking.id,
-            menuItemId: item.menuItemId,
-            quantity: item.quantity,
-            pricePerPerson: item.pricePerPerson,
-            totalPrice: item.quantity * item.pricePerPerson,
-          }),
-      );
-      await this.bookingMenuItemRepo.save(bookingMenuItems);
-    }
-
-    // Save booking services
-    if (data.services?.length) {
-      const bookingServices = data.services.map(
-        (s: { venueServiceId: string; quantity: number; unitPrice: number }) =>
-          this.bookingServiceRepo.create({
-            bookingId: savedBooking.id,
-            venueServiceId: s.venueServiceId,
-            pricingType: 'fixed',
-            unitPrice: s.unitPrice,
-            quantity: s.quantity,
-            totalPrice: s.quantity * s.unitPrice,
-            status: 'confirmed',
-          }),
-      );
-      await this.bookingServiceRepo.save(bookingServices);
-    }
-
-    if (clientId) {
-       const client = await this.clientRepo.findOne({ where: { id: clientId }});
-       if (client && client.phone) {
+    // SMS - transaksiyadan tashqari (SMS xatosi bron buzmasligi uchun)
+    if (savedBooking.clientId) {
+      try {
+        const client = await this.clientRepo.findOne({
+          where: { id: savedBooking.clientId },
+        });
+        if (client?.phone) {
           const msg = `Hurmatli ${client.fullName}! Sizning ${savedBooking.eventDate} kuniga iToyxona orqali qilingan brongiz qabul qilindi. Zayavka: ${savedBooking.bookingNumber}.`;
           await this.smsService.sendSms(client.phone, msg);
-       }
+        }
+      } catch {
+        // SMS xatosi brondan mustaqil
+      }
     }
 
     return savedBooking;
@@ -252,25 +321,29 @@ export class BookingsService {
     return booking;
   }
 
-  async update(id: string, data: Partial<Booking>) {
-    const booking = await this.findOne(id);
+  async update(venueId: string, id: string, data: Partial<Booking>) {
+    const booking = await this.findOne(id, venueId);
 
-    // Agar mehmonlar soni yoki narxlar o'zgarsa, qayta hisoblash
     const guestCount = (data as any).guestCount ?? booking.guestCount;
-    const hallPricePerPerson = (data as any).hallPricePerPerson ?? Number(booking.hallPricePerPerson);
-    const menuPricePerPerson = (data as any).menuPricePerPerson ?? (Number(booking.menuPricePerPerson) || 0);
-    const servicesTotal = (data as any).servicesTotal ?? Number(booking.servicesTotal);
-    const discountAmount = (data as any).discountAmount ?? Number(booking.discountAmount);
+    const hallPrice = (data as any).hallPrice ?? Number(booking.hallPrice);
+    const menuPricePerPerson =
+      (data as any).menuPricePerPerson ??
+      (Number(booking.menuPricePerPerson) || 0);
+    const servicesTotal =
+      (data as any).servicesTotal ?? Number(booking.servicesTotal);
+    const discountAmount =
+      (data as any).discountAmount ?? Number(booking.discountAmount);
 
-    const needsRecalc = (data as any).guestCount !== undefined ||
-      (data as any).hallPricePerPerson !== undefined ||
+    const needsRecalc =
+      (data as any).guestCount !== undefined ||
+      (data as any).hallPrice !== undefined ||
       (data as any).menuPricePerPerson !== undefined ||
       (data as any).servicesTotal !== undefined ||
       (data as any).discountAmount !== undefined;
 
     if (needsRecalc) {
       const menuTotal = menuPricePerPerson * guestCount;
-      const subtotal = (hallPricePerPerson * guestCount) + menuTotal + servicesTotal;
+      const subtotal = hallPrice + menuTotal + servicesTotal;
       const totalAmount = subtotal - discountAmount;
       const paidAmount = Number(booking.paidAmount) || 0;
 
@@ -279,14 +352,21 @@ export class BookingsService {
       (data as any).totalAmount = totalAmount;
       (data as any).remainingAmount = totalAmount - paidAmount;
 
-      // Mijoz statistikasini yangilash (eski totalAmount - yangi totalAmount)
       if (booking.clientId) {
         const diff = totalAmount - Number(booking.totalAmount);
         if (diff !== 0) {
           if (diff > 0) {
-            await this.clientRepo.increment({ id: booking.clientId }, 'totalSpent', diff);
+            await this.clientRepo.increment(
+              { id: booking.clientId },
+              'totalSpent',
+              diff,
+            );
           } else {
-            await this.clientRepo.decrement({ id: booking.clientId }, 'totalSpent', Math.abs(diff));
+            await this.clientRepo.decrement(
+              { id: booking.clientId },
+              'totalSpent',
+              Math.abs(diff),
+            );
           }
         }
       }
@@ -301,25 +381,29 @@ export class BookingsService {
 
     if (['confirmed', 'completed', 'fully_paid'].includes(booking.status)) {
       throw new BadRequestException(
-        'Tasdiqlangan yoki yakunlangan buyurtmani o\'chirib bo\'lmaydi. Avval bekor qiling.',
+        "Tasdiqlangan yoki yakunlangan buyurtmani o'chirib bo'lmaydi. Avval bekor qiling.",
       );
     }
 
     await this.bookingRepo.softDelete(id);
-    return { message: 'Buyurtma o\'chirildi' };
+    return { message: "Buyurtma o'chirildi" };
   }
 
-  async cancel(id: string, dto: CancelBookingDto, userId: string) {
-    const booking = await this.findOne(id);
+  async cancel(
+    venueId: string,
+    id: string,
+    dto: CancelBookingDto,
+    userId: string,
+  ) {
+    const booking = await this.findOne(id, venueId);
 
     if (['cancelled', 'completed'].includes(booking.status)) {
-      throw new BadRequestException('Bu buyurtmani bekor qilib bo\'lmaydi');
+      throw new BadRequestException("Bu buyurtmani bekor qilib bo'lmaydi");
     }
 
     const paidAmount = Number(booking.paidAmount) || 0;
     let refundPayment: Payment | null = null;
 
-    // Agar to'lov bo'lgan bo'lsa va refund so'ralsa — qaytarish yozuvi yaratiladi
     if (dto.refund && paidAmount > 0) {
       const paymentNumber = await this.generateRefundPaymentNumber();
 
@@ -343,10 +427,17 @@ export class BookingsService {
       booking.remainingAmount = Number(booking.totalAmount);
     }
 
-    // Mijoz statistikasini yangilash
     if (booking.clientId) {
-      await this.clientRepo.decrement({ id: booking.clientId }, 'totalBookings', 1);
-      await this.clientRepo.decrement({ id: booking.clientId }, 'totalSpent', Number(booking.totalAmount));
+      await this.clientRepo.decrement(
+        { id: booking.clientId },
+        'totalBookings',
+        1,
+      );
+      await this.clientRepo.decrement(
+        { id: booking.clientId },
+        'totalSpent',
+        Number(booking.totalAmount),
+      );
     }
 
     booking.status = 'cancelled';
@@ -358,13 +449,16 @@ export class BookingsService {
     return {
       booking: savedBooking,
       refund: refundPayment
-        ? { id: refundPayment.id, amount: paidAmount, currency: booking.currency }
+        ? {
+            id: refundPayment.id,
+            amount: paidAmount,
+            currency: booking.currency,
+          }
         : null,
     };
   }
 
   async getCalendar(venueId: string, month: string) {
-    // month format: YYYY-MM
     const startDate = `${month}-01`;
     const endDate = new Date(
       parseInt(month.split('-')[0]),
@@ -394,24 +488,11 @@ export class BookingsService {
     eventDate: string,
     timeSlot: string,
     excludeBookingId?: string,
+    customStartTime?: string,
+    customEndTime?: string,
   ): Promise<boolean> {
-    // Yangi bron vaqtini aniqlash
-    let newStart: string;
-    let newEnd: string;
-    if (timeSlot === 'custom') {
-      // custom uchun alohida tekshiriladi (startTime/endTime bilan)
-      // Bu yerda faqat slot-based tekshirish
-      newStart = '00:00';
-      newEnd = '23:59';
-    } else if (TIME_SLOT_MAP[timeSlot]) {
-      newStart = TIME_SLOT_MAP[timeSlot].start;
-      newEnd = TIME_SLOT_MAP[timeSlot].end;
-    } else {
-      newStart = '00:00';
-      newEnd = '23:59';
-    }
+    const newRange = resolveTimeRange(timeSlot, customStartTime, customEndTime);
 
-    // Shu sana va zalda mavjud bronlarni olish
     const qb = this.bookingRepo
       .createQueryBuilder('booking')
       .where('booking.hallId = :hallId', { hallId })
@@ -426,23 +507,13 @@ export class BookingsService {
 
     const existingBookings = await qb.getMany();
 
-    // Vaqt overlap tekshirish
     for (const existing of existingBookings) {
-      let existStart: string;
-      let existEnd: string;
-      if (existing.timeSlot === 'custom') {
-        existStart = existing.startTime || '00:00';
-        existEnd = existing.endTime || '23:59';
-      } else if (TIME_SLOT_MAP[existing.timeSlot]) {
-        existStart = TIME_SLOT_MAP[existing.timeSlot].start;
-        existEnd = TIME_SLOT_MAP[existing.timeSlot].end;
-      } else {
-        existStart = existing.startTime || '00:00';
-        existEnd = existing.endTime || '23:59';
-      }
-
-      // Overlap: newStart < existEnd AND newEnd > existStart
-      if (newStart < existEnd && newEnd > existStart) {
+      const existRange = resolveTimeRange(
+        existing.timeSlot,
+        existing.startTime,
+        existing.endTime,
+      );
+      if (newRange.start < existRange.end && newRange.end > existRange.start) {
         return false;
       }
     }
@@ -465,9 +536,12 @@ export class BookingsService {
     return `PAY-${year}-${String(nextNum).padStart(4, '0')}`;
   }
 
-  private async generateBookingNumber(): Promise<string> {
+  private async generateBookingNumber(
+    manager?: EntityManager,
+  ): Promise<string> {
+    const repo = manager ? manager.getRepository(Booking) : this.bookingRepo;
     const year = new Date().getFullYear();
-    const lastBooking = await this.bookingRepo.findOne({
+    const lastBooking = await repo.findOne({
       where: {},
       order: { createdAt: 'DESC' },
       withDeleted: true,
