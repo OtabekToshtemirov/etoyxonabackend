@@ -74,6 +74,21 @@ export class PaymentsService {
     if (!booking) throw new NotFoundException('Buyurtma topilmadi');
 
     const isRefund = (data.paymentType || 'payment') === 'refund';
+
+    // Bekor qilingan bron uchun yangi to'lov mumkin emas (faqat refund)
+    if (booking.status === 'cancelled' && !isRefund) {
+      throw new BadRequestException(
+        "Bekor qilingan bron uchun to'lov qabul qilib bo'lmaydi",
+      );
+    }
+
+    // Refund uchun aslida hech qanday to'lov bo'lmasa rad etamiz
+    if (isRefund && Number(booking.paidAmount) <= 0) {
+      throw new BadRequestException(
+        "To'lanmagan bron uchun refund qilib bo'lmaydi",
+      );
+    }
+
     const remainingAmount = Number(booking.remainingAmount) || 0;
 
     // ── Currency mismatch tekshiruv ──
@@ -344,12 +359,22 @@ export class PaymentsService {
 
     if (payment.status === 'completed') {
       throw new BadRequestException(
-        'Yakunlangan to\'lovni o\'chirib bo\'lmaydi',
+        "Yakunlangan to'lovni o'chirib bo'lmaydi. Refund qilish uchun yangi to'lov yarating.",
+      );
+    }
+
+    // Pending Click/Payme to'lovini o'chirish xavfli — webhook hali kelishi mumkin
+    if (
+      payment.status === 'pending' &&
+      ['click', 'payme'].includes(payment.paymentMethod)
+    ) {
+      throw new BadRequestException(
+        "Pending holatdagi Click/Payme to'lovini o'chirib bo'lmaydi (webhook hali kutilmoqda). Iltimos kutib oling.",
       );
     }
 
     await this.paymentRepo.softDelete(id);
-    return { message: 'To\'lov o\'chirildi' };
+    return { message: "To'lov o'chirildi" };
   }
 
   private async generatePaymentNumber(): Promise<string> {

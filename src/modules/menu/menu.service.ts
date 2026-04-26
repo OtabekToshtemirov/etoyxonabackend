@@ -71,9 +71,11 @@ export class MenuService {
     return this.itemRepo.save(item);
   }
 
-  async findItems(venueId: string, categoryId?: string) {
+  async findItems(venueId: string, categoryId?: string, includeUnavailable = false) {
     const where: any = { venueId };
     if (categoryId) where.categoryId = categoryId;
+    // Default — faqat available taomlar (bron formada ishlatiladi)
+    if (!includeUnavailable) where.isAvailable = true;
 
     return this.itemRepo.find({
       where,

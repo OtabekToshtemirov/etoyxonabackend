@@ -74,8 +74,9 @@ export class MenuController {
   async findItems(
     @Param('venueId', ParseUUIDPipe) venueId: string,
     @Query('categoryId') categoryId?: string,
+    @Query('includeUnavailable') includeUnavailable?: string,
   ) {
-    return this.menuService.findItems(venueId, categoryId);
+    return this.menuService.findItems(venueId, categoryId, includeUnavailable === 'true');
   }
 
   @Get('items/:id')

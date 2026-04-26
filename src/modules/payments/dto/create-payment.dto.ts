@@ -37,14 +37,14 @@ export class CreatePaymentDto {
   @IsNumber()
   amountInBase?: number;
 
-  @ApiProperty({ enum: ['cash', 'card', 'transfer', 'payme', 'click', 'uzum'] })
+  @ApiProperty({ enum: ['cash', 'card', 'bank_transfer', 'payme', 'click', 'uzum'] })
   @IsNotEmpty()
-  @IsString()
+  @IsEnum(['cash', 'card', 'bank_transfer', 'payme', 'click', 'uzum'])
   paymentMethod: string;
 
   @ApiPropertyOptional({ enum: ['payment', 'deposit', 'refund'], default: 'payment' })
   @IsOptional()
-  @IsString()
+  @IsEnum(['payment', 'deposit', 'refund'])
   paymentType?: string;
 
   @ApiPropertyOptional()

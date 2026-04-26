@@ -8,11 +8,13 @@ import { BookingService } from './entities/booking-service.entity';
 import { Hall } from '../halls/entities/hall.entity';
 import { Client } from '../clients/entities/client.entity';
 import { Payment } from '../payments/entities/payment.entity';
+import { VenuePackage } from '../venue-packages/entities/venue-package.entity';
+import { MenuItem } from '../menu/entities/menu-item.entity';
 import { SmsModule } from '../sms/sms.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Booking, BookingMenuItem, BookingService, Hall, Client, Payment]),
+    TypeOrmModule.forFeature([Booking, BookingMenuItem, BookingService, Hall, Client, Payment, VenuePackage, MenuItem]),
     SmsModule,
   ],
   controllers: [BookingsController],

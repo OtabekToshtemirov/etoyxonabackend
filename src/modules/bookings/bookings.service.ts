@@ -11,6 +11,8 @@ import { BookingService } from './entities/booking-service.entity';
 import { Hall } from '../halls/entities/hall.entity';
 import { Client } from '../clients/entities/client.entity';
 import { Payment } from '../payments/entities/payment.entity';
+import { VenuePackage } from '../venue-packages/entities/venue-package.entity';
+import { MenuItem } from '../menu/entities/menu-item.entity';
 import { PaginationDto } from '../../common/dto';
 import { CancelBookingDto } from './dto';
 import { SmsService } from '../sms/sms.service';
@@ -68,6 +70,8 @@ export class BookingsService {
     private readonly clientRepo: Repository<Client>,
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
+    @InjectRepository(VenuePackage)
+    private readonly venuePackageRepo: Repository<VenuePackage>,
     private readonly dataSource: DataSource,
     private readonly smsService: SmsService,
   ) {}
@@ -196,11 +200,34 @@ export class BookingsService {
         );
       }
 
+      // ── Paket narxini avtomatik qo'shish (frontend auto-fill'iga ishonmaymiz) ──
+      let packageTotal = 0;
+      if (data.venuePackageId) {
+        const pkgRepo = manager.getRepository(VenuePackage);
+        const pkg = await pkgRepo.findOne({
+          where: { id: data.venuePackageId, venueId },
+        });
+        if (!pkg) {
+          throw new BadRequestException('Paket topilmadi');
+        }
+        if (!pkg.isActive) {
+          throw new BadRequestException('Paket aktiv emas');
+        }
+        if (pkg.maxGuests && data.guestCount > pkg.maxGuests) {
+          throw new BadRequestException(
+            `Mehmonlar soni paket uchun maksimaldan oshib ketdi. Maks: ${pkg.maxGuests}`,
+          );
+        }
+        packageTotal = Number(pkg.pricePerPerson) * data.guestCount;
+      }
+
       const bookingNumber = await this.generateBookingNumber(manager);
-      const menuTotal = (data.menuPricePerPerson || 0) * data.guestCount;
-      const subtotal = hallPrice + menuTotal + servicesTotal;
+      // Paket bo'lsa menuPricePerPerson 0 ga teng (paketda allaqachon menyu bor) — double counting yo'q
+      const effectiveMenuPrice = data.venuePackageId ? 0 : (data.menuPricePerPerson || 0);
+      const menuTotal = effectiveMenuPrice * data.guestCount;
+      const subtotal = hallPrice + menuTotal + packageTotal + servicesTotal;
       const discountAmount = data.discountAmount || 0;
-      const totalAmount = subtotal - discountAmount;
+      const totalAmount = Math.max(0, subtotal - discountAmount);
 
       const booking = bookingRepo.create({
         bookingNumber,
@@ -216,7 +243,8 @@ export class BookingsService {
         eventType: data.eventType || 'wedding',
         venuePackageId: data.venuePackageId,
         menuPackageId: data.menuPackageId,
-        menuPricePerPerson: data.menuPricePerPerson,
+        // Paket bo'lsa menuPricePerPerson 0 saqlanadi (lekin asl qiymatni ham saqlaymiz UI uchun)
+        menuPricePerPerson: data.venuePackageId ? 0 : data.menuPricePerPerson,
         currency: data.currency || 'UZS',
         exchangeRate: data.exchangeRate,
         hallPrice,
@@ -241,6 +269,14 @@ export class BookingsService {
 
       if (data.menuItems?.length) {
         const menuItemRepo = manager.getRepository(BookingMenuItem);
+        const menuLookupRepo = manager.getRepository(MenuItem);
+        // Snapshot uchun nomlarni bir martda olamiz
+        const ids = data.menuItems.map((m: any) => m.menuItemId);
+        const lookup = ids.length
+          ? await menuLookupRepo.find({ where: ids.map((id: string) => ({ id })) })
+          : [];
+        const nameMap = new Map(lookup.map((m) => [m.id, m.name]));
+
         const bookingMenuItems = data.menuItems.map(
           (item: {
             menuItemId: string;
@@ -250,6 +286,7 @@ export class BookingsService {
             menuItemRepo.create({
               bookingId: saved.id,
               menuItemId: item.menuItemId,
+              menuItemName: nameMap.get(item.menuItemId) || '',
               quantity: item.quantity,
               pricePerPerson: item.pricePerPerson,
               totalPrice: item.quantity * item.pricePerPerson,
@@ -371,9 +408,14 @@ export class BookingsService {
 
     const guestCount = (data as any).guestCount ?? booking.guestCount;
     const hallPrice = (data as any).hallPrice ?? Number(booking.hallPrice);
-    const menuPricePerPerson =
-      (data as any).menuPricePerPerson ??
-      (Number(booking.menuPricePerPerson) || 0);
+    const venuePackageId =
+      (data as any).venuePackageId !== undefined
+        ? (data as any).venuePackageId
+        : booking.venuePackageId;
+    const menuPricePerPerson = venuePackageId
+      ? 0
+      : ((data as any).menuPricePerPerson ??
+        (Number(booking.menuPricePerPerson) || 0));
     const servicesTotal =
       (data as any).servicesTotal ?? Number(booking.servicesTotal);
     const discountAmount =
@@ -384,12 +426,29 @@ export class BookingsService {
       (data as any).hallPrice !== undefined ||
       (data as any).menuPricePerPerson !== undefined ||
       (data as any).servicesTotal !== undefined ||
-      (data as any).discountAmount !== undefined;
+      (data as any).discountAmount !== undefined ||
+      (data as any).venuePackageId !== undefined;
 
     if (needsRecalc) {
+      // Paket narxi (agar mavjud bo'lsa)
+      let packageTotal = 0;
+      if (venuePackageId) {
+        const pkg = await this.venuePackageRepo.findOne({
+          where: { id: venuePackageId, venueId },
+        });
+        if (!pkg) throw new BadRequestException('Paket topilmadi');
+        if (!pkg.isActive) throw new BadRequestException('Paket aktiv emas');
+        if (pkg.maxGuests && guestCount > pkg.maxGuests) {
+          throw new BadRequestException(
+            `Mehmonlar soni paket uchun maksimaldan oshib ketdi. Maks: ${pkg.maxGuests}`,
+          );
+        }
+        packageTotal = Number(pkg.pricePerPerson) * guestCount;
+      }
+
       const menuTotal = menuPricePerPerson * guestCount;
-      const subtotal = hallPrice + menuTotal + servicesTotal;
-      const totalAmount = subtotal - discountAmount;
+      const subtotal = hallPrice + menuTotal + packageTotal + servicesTotal;
+      const totalAmount = Math.max(0, subtotal - discountAmount);
       const paidAmount = Number(booking.paidAmount) || 0;
       const remainingAmount = Math.max(0, totalAmount - paidAmount);
 
@@ -397,6 +456,7 @@ export class BookingsService {
       (data as any).subtotal = subtotal;
       (data as any).totalAmount = totalAmount;
       (data as any).remainingAmount = remainingAmount;
+      (data as any).menuPricePerPerson = menuPricePerPerson;
 
       // ── Status sinxronlash: total o'zgargandan keyin paidAmount asosida ──
       // Cancelled/in_progress/completed statusini avtomatik o'zgartirmaymiz —
@@ -420,8 +480,63 @@ export class BookingsService {
     // venueId ni o'zgartirishga ruxsat bermaymiz
     delete (data as any).venueId;
 
+    // ── menuItems / services array — replace strategy (paket o'zgarsa eskilarini almashtirish) ──
+    const newMenuItems = (data as any).menuItems as
+      | { menuItemId: string; quantity: number; pricePerPerson: number }[]
+      | undefined;
+    const newServices = (data as any).services as
+      | { venueServiceId: string; quantity: number; unitPrice: number }[]
+      | undefined;
+    delete (data as any).menuItems;
+    delete (data as any).services;
+
     Object.assign(booking, data);
-    return this.bookingRepo.save(booking);
+    const saved = await this.bookingRepo.save(booking);
+
+    if (newMenuItems !== undefined) {
+      await this.bookingMenuItemRepo.delete({ bookingId: id });
+      if (newMenuItems.length) {
+        // Snapshot nomlarni olish
+        const menuItemRepo = this.dataSource.getRepository(MenuItem);
+        const ids = newMenuItems.map((m) => m.menuItemId);
+        const lookup = await menuItemRepo.find({
+          where: ids.map((id) => ({ id })),
+        });
+        const nameMap = new Map(lookup.map((m) => [m.id, m.name]));
+
+        const rows = newMenuItems.map((item) =>
+          this.bookingMenuItemRepo.create({
+            bookingId: id,
+            menuItemId: item.menuItemId,
+            menuItemName: nameMap.get(item.menuItemId) || '',
+            quantity: item.quantity,
+            pricePerPerson: item.pricePerPerson,
+            totalPrice: item.quantity * item.pricePerPerson,
+          }),
+        );
+        await this.bookingMenuItemRepo.save(rows);
+      }
+    }
+
+    if (newServices !== undefined) {
+      await this.bookingServiceRepo.delete({ bookingId: id });
+      if (newServices.length) {
+        const rows = newServices.map((s) =>
+          this.bookingServiceRepo.create({
+            bookingId: id,
+            venueServiceId: s.venueServiceId,
+            pricingType: 'fixed',
+            unitPrice: s.unitPrice,
+            quantity: s.quantity,
+            totalPrice: s.quantity * s.unitPrice,
+            status: 'confirmed',
+          }),
+        );
+        await this.bookingServiceRepo.save(rows);
+      }
+    }
+
+    return saved;
   }
 
   async remove(venueId: string, id: string) {
@@ -490,6 +605,12 @@ export class BookingsService {
     booking.cancelledAt = new Date();
 
     const savedBooking = await this.bookingRepo.save(booking);
+
+    // Cascade: BookingService statusini 'cancelled' ga o'tkazish (analitika to'g'ri bo'lsin)
+    await this.bookingServiceRepo.update(
+      { bookingId: id },
+      { status: 'cancelled' },
+    );
 
     return {
       booking: savedBooking,

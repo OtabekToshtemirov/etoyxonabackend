@@ -22,6 +22,10 @@ export class BookingMenuItem {
   @Column({ type: 'uuid', name: 'menu_item_id' })
   menuItemId: string;
 
+  // Snapshot — taom o'chirilsa ham nomi qoladi
+  @Column({ type: 'varchar', length: 200, nullable: true, name: 'menu_item_name' })
+  menuItemName: string;
+
   @Column({ type: 'integer', default: 1 })
   quantity: number;
 

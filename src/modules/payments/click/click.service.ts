@@ -221,6 +221,18 @@ export class ClickService {
       return { error: -1, error_note: 'Sign verification failed' };
     }
 
+    // ── Idempotency: agar to'lov allaqachon completed bo'lsa, takror qo'shmaymiz ──
+    if (payment.status === 'completed') {
+      this.logger.warn(`Click webhook duplicate: ${payment.paymentNumber} allaqachon completed`);
+      return {
+        click_trans_id,
+        merchant_trans_id,
+        merchant_confirm_id: payment.id,
+        error: 0,
+        error_note: 'Already completed',
+      };
+    }
+
     // Click xatolik yuborgan bo'lsa
     if (error < 0) {
       payment.status = 'failed';
@@ -239,17 +251,30 @@ export class ClickService {
       };
     }
 
-    // To'lovni yakunlash
-    payment.status = 'completed';
-    payment.paidAt = new Date();
-    payment.providerData = {
-      ...payment.providerData,
-      complete_time: Date.now(),
-    };
-    await this.paymentRepo.save(payment);
+    // To'lovni yakunlash + booking'ni yangilashni atomik qilamiz
+    await this.dataSource.transaction(async (manager) => {
+      const paymentRepo = manager.getRepository(Payment);
+      const lockedPayment = await paymentRepo
+        .createQueryBuilder('p')
+        .where('p.id = :id', { id: payment.id })
+        .setLock('pessimistic_write')
+        .getOne();
 
-    // Booking'ni yangilash
-    await this.updateBookingAfterPayment(payment);
+      if (!lockedPayment || lockedPayment.status === 'completed') {
+        // Boshqa parallel webhook bizni o'zib o'tdi
+        return;
+      }
+
+      lockedPayment.status = 'completed';
+      lockedPayment.paidAt = new Date();
+      lockedPayment.providerData = {
+        ...lockedPayment.providerData,
+        complete_time: Date.now(),
+      };
+      await paymentRepo.save(lockedPayment);
+
+      await this.updateBookingAfterPayment(lockedPayment, manager);
+    });
 
     this.logger.log(`Click to'lov yakunlandi: ${payment.paymentNumber}, summa: ${payment.amount} UZS`);
 
@@ -269,23 +294,29 @@ export class ClickService {
     return crypto.createHash('md5').update(signString).digest('hex');
   }
 
-  private async updateBookingAfterPayment(payment: Payment) {
-    const booking = await this.bookingRepo.findOne({
+  private async updateBookingAfterPayment(payment: Payment, manager?: any) {
+    const bookingRepo = manager ? manager.getRepository(Booking) : this.bookingRepo;
+    const booking = await bookingRepo.findOne({
       where: { id: payment.bookingId },
     });
     if (!booking) return;
 
-    booking.paidAmount = Number(booking.paidAmount) + Number(payment.amount);
-    booking.remainingAmount = Number(booking.totalAmount) - Number(booking.paidAmount);
+    // Cap: paidAmount totalAmount'dan oshmasligi shart
+    const newPaid = Number(booking.paidAmount) + Number(payment.amount);
+    booking.paidAmount = Math.min(newPaid, Number(booking.totalAmount));
+    booking.remainingAmount = Math.max(
+      0,
+      Number(booking.totalAmount) - Number(booking.paidAmount),
+    );
 
     if (booking.remainingAmount <= 0) {
       booking.status = 'fully_paid';
       booking.remainingAmount = 0;
-    } else if (booking.status === 'pending') {
+    } else if (['pending', 'fully_paid'].includes(booking.status)) {
       booking.status = 'deposit_paid';
     }
 
-    await this.bookingRepo.save(booking);
+    await bookingRepo.save(booking);
   }
 
   private async generatePaymentNumber(): Promise<string> {

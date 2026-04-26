@@ -1,11 +1,14 @@
 import {
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { VenuePackage } from './entities/venue-package.entity';
 import { VenuePackageItem } from './entities/venue-package-item.entity';
+import { MenuItem } from '../menu/entities/menu-item.entity';
+import { VenueService } from '../services/entities/venue-service.entity';
 import { CreateVenuePackageDto, UpdateVenuePackageDto } from './dto';
 
 @Injectable()
@@ -15,10 +18,46 @@ export class VenuePackagesService {
     private readonly packageRepo: Repository<VenuePackage>,
     @InjectRepository(VenuePackageItem)
     private readonly packageItemRepo: Repository<VenuePackageItem>,
+    @InjectRepository(MenuItem)
+    private readonly menuItemRepo: Repository<MenuItem>,
+    @InjectRepository(VenueService)
+    private readonly venueServiceRepo: Repository<VenueService>,
   ) {}
+
+  /** Validate every item references this venue's own resources */
+  private async validateItemsTenant(
+    venueId: string,
+    items: CreateVenuePackageDto['items'] | undefined,
+  ) {
+    if (!items?.length) return;
+    for (const item of items) {
+      if (item.type === 'menu_item' && item.menuItemId) {
+        const exists = await this.menuItemRepo.findOne({
+          where: { id: item.menuItemId, venueId },
+        });
+        if (!exists) {
+          throw new BadRequestException(
+            `Taom topilmadi yoki boshqa to'yxonaga tegishli: ${item.menuItemId}`,
+          );
+        }
+      } else if (item.type === 'service' && item.venueServiceId) {
+        const exists = await this.venueServiceRepo.findOne({
+          where: { id: item.venueServiceId, venueId },
+        });
+        if (!exists) {
+          throw new BadRequestException(
+            `Xizmat topilmadi yoki boshqa to'yxonaga tegishli: ${item.venueServiceId}`,
+          );
+        }
+      }
+    }
+  }
 
   async create(venueId: string, data: CreateVenuePackageDto) {
     const { items, ...packageData } = data;
+
+    // Tenant validatsiyasi — items boshqa to'yxonaga tegishli bo'lmasin
+    await this.validateItemsTenant(venueId, items);
 
     const venuePackage = this.packageRepo.create({
       ...packageData,
@@ -67,6 +106,10 @@ export class VenuePackagesService {
   async update(venueId: string, id: string, data: UpdateVenuePackageDto) {
     const pkg = await this.findOne(venueId, id);
     const { items, ...packageData } = data;
+
+    if (items !== undefined) {
+      await this.validateItemsTenant(venueId, items);
+    }
 
     delete (packageData as any).venueId;
     Object.assign(pkg, packageData);
