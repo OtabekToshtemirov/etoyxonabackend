@@ -42,24 +42,31 @@ export class HallsController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Zal ma\'lumotlari' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.hallsService.findOne(id);
+  async findOne(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.hallsService.findOne(venueId, id);
   }
 
   @Patch(':id')
   @Roles(Role.OWNER, Role.MANAGER)
   @ApiOperation({ summary: 'Zalni tahrirlash' })
   async update(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateHallDto,
   ) {
-    return this.hallsService.update(id, dto);
+    return this.hallsService.update(venueId, id, dto);
   }
 
   @Delete(':id')
   @Roles(Role.OWNER)
   @ApiOperation({ summary: 'Zalni o\'chirish' })
-  async remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.hallsService.remove(id);
+  async remove(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.hallsService.remove(venueId, id);
   }
 }

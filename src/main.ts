@@ -2,9 +2,11 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { DataSource } from 'typeorm';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters';
 import { TransformInterceptor, LoggingInterceptor } from './common/interceptors';
+import { ensureSequencesExist } from './common/utils/sequence.util';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -23,6 +25,10 @@ async function bootstrap() {
   }
 
   app.enableShutdownHooks();
+
+  // Ensure Postgres SEQUENCEs for booking/payment numbers exist
+  const dataSource = app.get(DataSource);
+  await ensureSequencesExist(dataSource);
 
   // Global prefix
   app.setGlobalPrefix('api/v1');

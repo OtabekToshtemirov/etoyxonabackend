@@ -4,6 +4,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { appConfig, databaseConfig, jwtConfig } from './config';
+import { VenueAccessGuard } from './common/guards/venue-access.guard';
+import { VenueMember } from './modules/users/entities/venue-member.entity';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { VenuesModule } from './modules/venues/venues.module';
@@ -75,11 +77,18 @@ import { ClickModule } from './modules/payments/click/click.module';
     // Payment Providers
     PaymeModule,
     ClickModule,
+
+    // Tenant guard needs VenueMember repository
+    TypeOrmModule.forFeature([VenueMember]),
   ],
   providers: [
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: VenueAccessGuard,
     },
   ],
 })

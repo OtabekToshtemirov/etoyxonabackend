@@ -75,8 +75,11 @@ export class PaymentsController {
 
   @Get(':id')
   @ApiOperation({ summary: 'To\'lov tafsilotlari' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.paymentsService.findOne(id);
+  async findOne(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.paymentsService.findOne(id, venueId);
   }
 
   @Patch(':id')

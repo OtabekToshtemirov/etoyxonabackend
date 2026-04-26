@@ -14,6 +14,8 @@ import { Payment } from '../payments/entities/payment.entity';
 import { PaginationDto } from '../../common/dto';
 import { CancelBookingDto } from './dto';
 import { SmsService } from '../sms/sms.service';
+import { nextBookingNumber, nextRefundNumber } from '../../common/utils/sequence.util';
+import { normalizePhone } from '../../common/utils/phone.util';
 
 const TIME_SLOT_MAP: Record<string, { start: string; end: string }> = {
   morning: { start: '08:00', end: '12:00' },
@@ -71,10 +73,52 @@ export class BookingsService {
   ) {}
 
   async create(venueId: string, userId: string, data: any) {
+    // ── Validatsiya: custom time start < end ──
+    if (data.timeSlot === 'custom') {
+      if (!data.customStartTime || !data.customEndTime) {
+        throw new BadRequestException(
+          "Custom vaqt uchun boshlanish va tugash vaqti majburiy",
+        );
+      }
+      if (
+        timeToMinutes(data.customStartTime) >=
+        timeToMinutes(data.customEndTime)
+      ) {
+        throw new BadRequestException(
+          "Boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak",
+        );
+      }
+    }
+
+    // ── Validatsiya: guestCount > 0 ──
+    if (!data.guestCount || data.guestCount < 1) {
+      throw new BadRequestException("Mehmonlar soni 1 dan kam bo'lmasin");
+    }
+
     const savedBooking = await this.dataSource.transaction(async (manager) => {
       const bookingRepo = manager.getRepository(Booking);
+      const hallRepo = manager.getRepository(Hall);
 
-      // Pessimistic lock: shu zal va shu sanadagi bronlarni bloklaymiz
+      // ── Hall row lock (zalda hech qanday bron bo'lmasa ham bloklash uchun) ──
+      const hall = await hallRepo
+        .createQueryBuilder('hall')
+        .where('hall.id = :id', { id: data.hallId })
+        .andWhere('hall.venueId = :venueId', { venueId })
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!hall) {
+        throw new NotFoundException('Zal topilmadi');
+      }
+
+      // ── Capacity tekshirish ──
+      if (hall.maxCapacity && data.guestCount > hall.maxCapacity) {
+        throw new BadRequestException(
+          `Mehmonlar soni zal sig'imidan oshib ketdi. Maksimal: ${hall.maxCapacity}`,
+        );
+      }
+
+      // Endi shu zal va sanadagi bronlarni o'qiymiz (lock allaqachon hall'ga qo'yilgan)
       const existingBookings = await bookingRepo
         .createQueryBuilder('booking')
         .where('booking.hallId = :hallId', { hallId: data.hallId })
@@ -82,7 +126,6 @@ export class BookingsService {
           eventDate: data.eventDate,
         })
         .andWhere('booking.status != :cancelled', { cancelled: 'cancelled' })
-        .setLock('pessimistic_write')
         .getMany();
 
       // Yangi bron vaqtini aniqlash
@@ -110,13 +153,14 @@ export class BookingsService {
       let clientId = data.clientId;
       if (!clientId && data.clientPhone) {
         const clientRepo = manager.getRepository(Client);
+        const normalizedPhone = normalizePhone(data.clientPhone);
         let client = await clientRepo.findOne({
-          where: { phone: data.clientPhone, venueId },
+          where: { phone: normalizedPhone, venueId },
         });
         if (!client) {
           client = clientRepo.create({
             venueId,
-            phone: data.clientPhone,
+            phone: normalizedPhone,
             fullName: data.clientFullName || "Noma'lum",
             source: 'phone',
           });
@@ -126,19 +170,20 @@ export class BookingsService {
       }
 
       // Zal narxi
-      const hallRepo = manager.getRepository(Hall);
-      const hall = await hallRepo.findOne({ where: { id: data.hallId } });
-      const hallPrice = data.hallPrice ?? (hall ? Number(hall.hallPrice) : 0);
+      const hallPrice = data.hallPrice ?? Number(hall.hallPrice || 0);
 
-      // Vaqt
-      let startTime = data.startTime;
-      let endTime = data.endTime;
+      // Vaqt — strict: timeSlot='custom' bo'lsagina custom*Time qabul qilinadi
+      let startTime: string;
+      let endTime: string;
       if (data.timeSlot === 'custom') {
-        startTime = data.customStartTime || '08:00';
-        endTime = data.customEndTime || '23:00';
-      } else if (!startTime && TIME_SLOT_MAP[data.timeSlot]) {
+        startTime = data.customStartTime;
+        endTime = data.customEndTime;
+      } else if (TIME_SLOT_MAP[data.timeSlot]) {
         startTime = TIME_SLOT_MAP[data.timeSlot].start;
         endTime = TIME_SLOT_MAP[data.timeSlot].end;
+      } else {
+        startTime = data.startTime || '08:00';
+        endTime = data.endTime || '23:00';
       }
 
       // Xizmatlar
@@ -191,7 +236,7 @@ export class BookingsService {
       if (clientId) {
         const clientRepo = manager.getRepository(Client);
         await clientRepo.increment({ id: clientId }, 'totalBookings', 1);
-        await clientRepo.increment({ id: clientId }, 'totalSpent', totalAmount);
+        // totalSpent — actualpaymentlardan keladi (PaymentsService.create).
       }
 
       if (data.menuItems?.length) {
@@ -346,31 +391,34 @@ export class BookingsService {
       const subtotal = hallPrice + menuTotal + servicesTotal;
       const totalAmount = subtotal - discountAmount;
       const paidAmount = Number(booking.paidAmount) || 0;
+      const remainingAmount = Math.max(0, totalAmount - paidAmount);
 
       (data as any).menuTotal = menuTotal;
       (data as any).subtotal = subtotal;
       (data as any).totalAmount = totalAmount;
-      (data as any).remainingAmount = totalAmount - paidAmount;
+      (data as any).remainingAmount = remainingAmount;
 
-      if (booking.clientId) {
-        const diff = totalAmount - Number(booking.totalAmount);
-        if (diff !== 0) {
-          if (diff > 0) {
-            await this.clientRepo.increment(
-              { id: booking.clientId },
-              'totalSpent',
-              diff,
-            );
-          } else {
-            await this.clientRepo.decrement(
-              { id: booking.clientId },
-              'totalSpent',
-              Math.abs(diff),
-            );
-          }
+      // ── Status sinxronlash: total o'zgargandan keyin paidAmount asosida ──
+      // Cancelled/in_progress/completed statusini avtomatik o'zgartirmaymiz —
+      // ular admin amali bilan o'rnatiladi.
+      const protectedStatuses = ['cancelled', 'in_progress', 'completed'];
+      if (!protectedStatuses.includes(booking.status)) {
+        if (remainingAmount <= 0 && paidAmount > 0) {
+          (data as any).status = 'fully_paid';
+        } else if (paidAmount > 0) {
+          (data as any).status = 'deposit_paid';
+        } else if (
+          booking.status === 'fully_paid' ||
+          booking.status === 'deposit_paid'
+        ) {
+          // total oshib ketib, paid 0 bo'lishi (theoretically) — pending ga qayt
+          (data as any).status = 'pending';
         }
       }
     }
+
+    // venueId ni o'zgartirishga ruxsat bermaymiz
+    delete (data as any).venueId;
 
     Object.assign(booking, data);
     return this.bookingRepo.save(booking);
@@ -433,11 +481,8 @@ export class BookingsService {
         'totalBookings',
         1,
       );
-      await this.clientRepo.decrement(
-        { id: booking.clientId },
-        'totalSpent',
-        Number(booking.totalAmount),
-      );
+      // totalSpent — refund payment'da kamayadi (PaymentsService da).
+      // Booking cancel'da to'g'ridan-to'g'ri kamaytirmaymiz.
     }
 
     booking.status = 'cancelled';
@@ -522,35 +567,12 @@ export class BookingsService {
   }
 
   private async generateRefundPaymentNumber(): Promise<string> {
-    const year = new Date().getFullYear();
-    const lastPayment = await this.paymentRepo.findOne({
-      where: {},
-      order: { createdAt: 'DESC' },
-      withDeleted: true,
-    });
-    let nextNum = 1;
-    if (lastPayment?.paymentNumber) {
-      const match = lastPayment.paymentNumber.match(/PAY-\d+-(\d+)/);
-      if (match) nextNum = parseInt(match[1], 10) + 1;
-    }
-    return `PAY-${year}-${String(nextNum).padStart(4, '0')}`;
+    return nextRefundNumber(this.dataSource);
   }
 
   private async generateBookingNumber(
     manager?: EntityManager,
   ): Promise<string> {
-    const repo = manager ? manager.getRepository(Booking) : this.bookingRepo;
-    const year = new Date().getFullYear();
-    const lastBooking = await repo.findOne({
-      where: {},
-      order: { createdAt: 'DESC' },
-      withDeleted: true,
-    });
-    let nextNum = 1;
-    if (lastBooking?.bookingNumber) {
-      const match = lastBooking.bookingNumber.match(/BK-\d+-(\d+)/);
-      if (match) nextNum = parseInt(match[1], 10) + 1;
-    }
-    return `BK-${year}-${String(nextNum).padStart(4, '0')}`;
+    return nextBookingNumber(manager || this.dataSource);
   }
 }

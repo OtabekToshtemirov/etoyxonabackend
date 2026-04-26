@@ -24,20 +24,22 @@ export class HallsService {
     });
   }
 
-  async findOne(id: string) {
-    const hall = await this.hallRepo.findOne({ where: { id } });
+  async findOne(venueId: string, id: string) {
+    const hall = await this.hallRepo.findOne({ where: { id, venueId } });
     if (!hall) throw new NotFoundException('Zal topilmadi');
     return hall;
   }
 
-  async update(id: string, dto: UpdateHallDto) {
-    const hall = await this.findOne(id);
+  async update(venueId: string, id: string, dto: UpdateHallDto) {
+    const hall = await this.findOne(venueId, id);
     Object.assign(hall, dto);
     return this.hallRepo.save(hall);
   }
 
-  async remove(id: string) {
-    await this.hallRepo.softDelete(id);
-    return { message: 'Zal o\'chirildi' };
+  async remove(venueId: string, id: string) {
+    // ensure ownership before delete
+    await this.findOne(venueId, id);
+    await this.hallRepo.softDelete({ id, venueId });
+    return { message: "Zal o'chirildi" };
   }
 }

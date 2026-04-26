@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Client } from './entities/client.entity';
 import { Booking } from '../bookings/entities/booking.entity';
 import { Payment } from '../payments/entities/payment.entity';
 import { PaginationDto } from '../../common/dto';
+import { normalizePhone } from '../../common/utils/phone.util';
 
 @Injectable()
 export class ClientsService {
@@ -18,6 +19,18 @@ export class ClientsService {
   ) {}
 
   async create(venueId: string, data: Partial<Client>) {
+    if (data.phone) {
+      data.phone = normalizePhone(data.phone);
+      // duplicate guard within same venue
+      const existing = await this.clientRepo.findOne({
+        where: { venueId, phone: data.phone },
+      });
+      if (existing) {
+        throw new ConflictException(
+          'Bu telefon raqamga ega mijoz allaqachon mavjud',
+        );
+      }
+    }
     const client = this.clientRepo.create({ ...data, venueId });
     return this.clientRepo.save(client);
   }
@@ -30,9 +43,13 @@ export class ClientsService {
       .where('client.venueId = :venueId', { venueId });
 
     if (search) {
+      // Try to normalize search if it looks like a phone number, so
+      // searching "+998 90 ..." matches stored "+998901234567".
+      const looksLikePhone = /[\d+\-\s()]+/.test(search) && /\d/.test(search);
+      const normalizedSearch = looksLikePhone ? normalizePhone(search) : search;
       qb.andWhere(
-        '(client.fullName ILIKE :search OR client.phone ILIKE :search)',
-        { search: `%${search}%` },
+        '(client.fullName ILIKE :search OR client.phone ILIKE :search OR client.phone ILIKE :normalized)',
+        { search: `%${search}%`, normalized: `%${normalizedSearch}%` },
       );
     }
 
@@ -54,12 +71,12 @@ export class ClientsService {
       order: { eventDate: 'DESC' },
     });
 
-    // Load payments for this client's bookings
+    // Load payments for this client's bookings (single IN query, no N+1)
     const bookingIds = bookings.map((b) => b.id);
     let payments: Payment[] = [];
     if (bookingIds.length > 0) {
       payments = await this.paymentRepo.find({
-        where: bookingIds.map((bid) => ({ bookingId: bid })),
+        where: { bookingId: In(bookingIds) },
         order: { createdAt: 'DESC' },
       });
     }
@@ -69,13 +86,25 @@ export class ClientsService {
 
   async update(venueId: string, id: string, data: Partial<Client>) {
     await this.findOne(venueId, id);
-    await this.clientRepo.update(id, data);
+    if (data.phone) {
+      data.phone = normalizePhone(data.phone);
+      const existing = await this.clientRepo.findOne({
+        where: { venueId, phone: data.phone },
+      });
+      if (existing && existing.id !== id) {
+        throw new ConflictException(
+          'Bu telefon raqamga ega boshqa mijoz mavjud',
+        );
+      }
+    }
+    delete (data as any).venueId;
+    await this.clientRepo.update({ id, venueId }, data);
     return this.findOne(venueId, id);
   }
 
   async remove(venueId: string, id: string) {
     await this.findOne(venueId, id);
-    await this.clientRepo.softDelete(id);
-    return { message: 'Mijoz o\'chirildi' };
+    await this.clientRepo.softDelete({ id, venueId });
+    return { message: "Mijoz o'chirildi" };
   }
 }

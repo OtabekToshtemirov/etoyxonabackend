@@ -13,7 +13,7 @@ export class ServicesService {
     private readonly serviceRepo: Repository<VenueService>,
   ) {}
 
-  // ─── Categories ───────────────────────────────────
+  // ─── Categories (GLOBAL — admin only) ─────────────
   async findCategories() {
     return this.categoryRepo.find({
       where: { isActive: true },
@@ -42,10 +42,10 @@ export class ServicesService {
       throw new BadRequestException(`Bu kategoriyada ${count} ta xizmat bor. Avval xizmatlarni boshqa kategoriyaga o'tkazing.`);
     }
     await this.categoryRepo.delete(id);
-    return { message: 'Kategoriya o\'chirildi' };
+    return { message: "Kategoriya o'chirildi" };
   }
 
-  // ─── Venue Services ──────────────────────────────
+  // ─── Venue Services (per-tenant) ──────────────────
   async create(venueId: string, data: Partial<VenueService>) {
     const service = this.serviceRepo.create({ ...data, venueId });
     return this.serviceRepo.save(service);
@@ -62,23 +62,25 @@ export class ServicesService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(venueId: string, id: string) {
     const service = await this.serviceRepo.findOne({
-      where: { id },
+      where: { id, venueId },
       relations: ['category'],
     });
     if (!service) throw new NotFoundException('Xizmat topilmadi');
     return service;
   }
 
-  async update(id: string, data: Partial<VenueService>) {
-    await this.findOne(id);
-    await this.serviceRepo.update(id, data);
-    return this.findOne(id);
+  async update(venueId: string, id: string, data: Partial<VenueService>) {
+    await this.findOne(venueId, id);
+    delete (data as any).venueId;
+    await this.serviceRepo.update({ id, venueId }, data);
+    return this.findOne(venueId, id);
   }
 
-  async remove(id: string) {
-    await this.serviceRepo.softDelete(id);
-    return { message: 'Xizmat o\'chirildi' };
+  async remove(venueId: string, id: string) {
+    await this.findOne(venueId, id);
+    await this.serviceRepo.softDelete({ id, venueId });
+    return { message: "Xizmat o'chirildi" };
   }
 }

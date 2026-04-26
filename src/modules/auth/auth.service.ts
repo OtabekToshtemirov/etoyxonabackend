@@ -14,11 +14,31 @@ import { VenueMember } from '../users/entities/venue-member.entity';
 import { LoginDto, RegisterDto, SelectVenueDto, ChangePasswordDto, SendOtpDto, VerifyOtpDto, ResetPasswordDto } from './dto';
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { SmsService } from '../sms/sms.service';
+import { normalizePhone } from '../../common/utils/phone.util';
 
 @Injectable()
 export class AuthService {
-  // In-memory OTP store: phone -> { code, expiresAt }
-  private otpStore = new Map<string, { code: string; expiresAt: Date }>();
+  // In-memory OTP store: phone -> { code, expiresAt, lastSentAt, attempts }
+  // ⚠️ Production: replace with Redis for multi-instance + persistence.
+  private otpStore = new Map<
+    string,
+    { code: string; expiresAt: Date; lastSentAt: Date; attempts: number }
+  >();
+
+  // Periodic cleanup of expired entries to prevent memory leak
+  private cleanupInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [phone, entry] of this.otpStore.entries()) {
+      // remove if expired more than 1 hour ago
+      if (entry.expiresAt.getTime() + 60 * 60 * 1000 < now) {
+        this.otpStore.delete(phone);
+      }
+    }
+  }, 10 * 60 * 1000);
+
+  onModuleDestroy() {
+    clearInterval(this.cleanupInterval);
+  }
 
   constructor(
     @InjectRepository(User)
@@ -38,9 +58,10 @@ export class AuthService {
    * - 2+ venues: venue list to choose from, type='multiple_venues'
    */
   async login(dto: LoginDto) {
-    // 1. Find user by phone
+    // 1. Find user by phone (normalized)
+    const phone = normalizePhone(dto.phone);
     const user = await this.userRepo.findOne({
-      where: { phone: dto.phone, status: 'active' },
+      where: { phone, status: 'active' },
     });
 
     if (!user) {
@@ -129,9 +150,10 @@ export class AuthService {
    * Register a new user
    */
   async register(dto: RegisterDto) {
+    const phone = normalizePhone(dto.phone);
     // Check if phone already exists
     const existingUser = await this.userRepo.findOne({
-      where: { phone: dto.phone },
+      where: { phone },
     });
 
     if (existingUser) {
@@ -143,7 +165,7 @@ export class AuthService {
 
     // Create user
     const user = this.userRepo.create({
-      phone: dto.phone,
+      phone,
       passwordHash,
       fullName: dto.fullName,
       email: dto.email,
@@ -275,16 +297,46 @@ export class AuthService {
   }
 
   /**
-   * Send OTP code via SMS
+   * Send OTP code via SMS — with rate limit
+   * Rate limit: 1 SMS / 60 seconds per phone, max 5 SMS / hour per phone.
    */
   async sendOtp(dto: SendOtpDto) {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 daqiqa
+    const phone = normalizePhone(dto.phone);
+    const now = Date.now();
+    const existing = this.otpStore.get(phone);
 
-    this.otpStore.set(dto.phone, { code, expiresAt });
+    if (existing) {
+      const sinceLast = now - existing.lastSentAt.getTime();
+      if (sinceLast < 60 * 1000) {
+        const wait = Math.ceil((60 * 1000 - sinceLast) / 1000);
+        throw new BadRequestException(
+          `Iltimos ${wait} sekunddan keyin qayta urinib ko'ring`,
+        );
+      }
+      if (existing.attempts >= 5) {
+        // 5+ in 1 hour window → block until window expires
+        if (existing.expiresAt.getTime() + 60 * 60 * 1000 > now) {
+          throw new BadRequestException(
+            'Juda ko\'p urinish. 1 soatdan keyin qayta urinib ko\'ring',
+          );
+        }
+        // window passed → reset
+        existing.attempts = 0;
+      }
+    }
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(now + 5 * 60 * 1000); // 5 daqiqa
+
+    this.otpStore.set(phone, {
+      code,
+      expiresAt,
+      lastSentAt: new Date(now),
+      attempts: (existing?.attempts || 0) + 1,
+    });
 
     await this.smsService.sendSms(
-      dto.phone,
+      phone,
       `iToyxona: Sizning tasdiqlash kodingiz: ${code}. Kod 5 daqiqa amal qiladi.`,
     );
 
@@ -295,13 +347,14 @@ export class AuthService {
    * Verify OTP code
    */
   async verifyOtp(dto: VerifyOtpDto) {
-    const stored = this.otpStore.get(dto.phone);
+    const phone = normalizePhone(dto.phone);
+    const stored = this.otpStore.get(phone);
     if (!stored) {
       throw new BadRequestException('Tasdiqlash kodi topilmadi. Qaytadan yuboring.');
     }
 
     if (new Date() > stored.expiresAt) {
-      this.otpStore.delete(dto.phone);
+      this.otpStore.delete(phone);
       throw new BadRequestException('Tasdiqlash kodi muddati tugagan');
     }
 
@@ -309,7 +362,7 @@ export class AuthService {
       throw new BadRequestException('Tasdiqlash kodi noto\'g\'ri');
     }
 
-    this.otpStore.delete(dto.phone);
+    this.otpStore.delete(phone);
     return { message: 'Telefon raqam tasdiqlandi', verified: true };
   }
 
@@ -317,13 +370,14 @@ export class AuthService {
    * Reset password with OTP
    */
   async resetPassword(dto: ResetPasswordDto) {
-    const stored = this.otpStore.get(dto.phone);
+    const phone = normalizePhone(dto.phone);
+    const stored = this.otpStore.get(phone);
     if (!stored) {
       throw new BadRequestException('Tasdiqlash kodi topilmadi');
     }
 
     if (new Date() > stored.expiresAt) {
-      this.otpStore.delete(dto.phone);
+      this.otpStore.delete(phone);
       throw new BadRequestException('Tasdiqlash kodi muddati tugagan');
     }
 
@@ -331,14 +385,14 @@ export class AuthService {
       throw new BadRequestException('Tasdiqlash kodi noto\'g\'ri');
     }
 
-    const user = await this.userRepo.findOne({ where: { phone: dto.phone } });
+    const user = await this.userRepo.findOne({ where: { phone } });
     if (!user) {
       throw new BadRequestException('Foydalanuvchi topilmadi');
     }
 
     const newHash = await bcrypt.hash(dto.newPassword, 12);
     await this.userRepo.update(user.id, { passwordHash: newHash });
-    this.otpStore.delete(dto.phone);
+    this.otpStore.delete(phone);
 
     return { message: 'Parol muvaffaqiyatli yangilandi' };
   }

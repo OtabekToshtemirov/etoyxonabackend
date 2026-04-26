@@ -30,16 +30,17 @@ export class ServicesController {
     return this.servicesService.findCategories();
   }
 
+  // Categories are GLOBAL — only super-admin may mutate
   @Post('venues/:venueId/services/categories')
-  @Roles(Role.OWNER, Role.MANAGER)
-  @ApiOperation({ summary: 'Yangi xizmat kategoriyasi' })
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Yangi xizmat kategoriyasi (admin)' })
   async createCategory(@Body() data: CreateServiceCategoryDto) {
     return this.servicesService.createCategory(data);
   }
 
   @Patch('venues/:venueId/services/categories/:id')
-  @Roles(Role.OWNER, Role.MANAGER)
-  @ApiOperation({ summary: 'Xizmat kategoriyasini tahrirlash' })
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Xizmat kategoriyasini tahrirlash (admin)' })
   async updateCategory(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() data: UpdateServiceCategoryDto,
@@ -48,8 +49,8 @@ export class ServicesController {
   }
 
   @Delete('venues/:venueId/services/categories/:id')
-  @Roles(Role.OWNER, Role.MANAGER)
-  @ApiOperation({ summary: 'Xizmat kategoriyasini o\'chirish' })
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Xizmat kategoriyasini o\'chirish (admin)' })
   async removeCategory(@Param('id', ParseUUIDPipe) id: string) {
     return this.servicesService.removeCategory(id);
   }
@@ -74,22 +75,29 @@ export class ServicesController {
   }
 
   @Get('venues/:venueId/services/:id')
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.servicesService.findOne(id);
+  async findOne(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.servicesService.findOne(venueId, id);
   }
 
   @Patch('venues/:venueId/services/:id')
   @Roles(Role.OWNER, Role.MANAGER)
   async update(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() data: UpdateServiceDto,
   ) {
-    return this.servicesService.update(id, data);
+    return this.servicesService.update(venueId, id, data);
   }
 
   @Delete('venues/:venueId/services/:id')
   @Roles(Role.OWNER, Role.MANAGER)
-  async remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.servicesService.remove(id);
+  async remove(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.servicesService.remove(venueId, id);
   }
 }

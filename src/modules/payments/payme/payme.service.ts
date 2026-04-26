@@ -5,10 +5,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Payment } from '../entities/payment.entity';
 import { VenuePaymentSettings } from '../entities/venue-payment-settings.entity';
 import { Booking } from '../../bookings/entities/booking.entity';
+import { nextPaymentNumber } from '../../../common/utils/sequence.util';
 
 /**
  * Payme Merchant API integratsiyasi (per-venue)
@@ -34,6 +35,7 @@ export class PaymeService {
     private readonly bookingRepo: Repository<Booking>,
     @InjectRepository(VenuePaymentSettings)
     private readonly settingsRepo: Repository<VenuePaymentSettings>,
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
@@ -69,6 +71,13 @@ export class PaymeService {
       where: { id: bookingId, venueId },
     });
     if (!booking) throw new BadRequestException('Buyurtma topilmadi');
+
+    // Payme faqat UZS bilan ishlaydi
+    if (booking.currency !== 'UZS') {
+      throw new BadRequestException(
+        "Payme to'lovi faqat UZS valyutadagi bronlar uchun mavjud",
+      );
+    }
 
     // Shu venue ning kalitlarini olish
     const settings = await this.getVenueSettings(venueId);
@@ -405,8 +414,7 @@ export class PaymeService {
   }
 
   private async generatePaymentNumber(): Promise<string> {
-    const year = new Date().getFullYear();
-    const count = await this.paymentRepo.count();
-    return `PAYME-${year}-${String(count + 1).padStart(4, '0')}`;
+    const num = await nextPaymentNumber(this.dataSource);
+    return num.replace(/^PAY-/, 'PAYME-');
   }
 }

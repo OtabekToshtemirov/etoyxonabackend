@@ -41,24 +41,31 @@ export class VenuePackagesController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Paket tafsilotlari' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.venuePackagesService.findOne(id);
+  async findOne(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.venuePackagesService.findOne(venueId, id);
   }
 
   @Patch(':id')
   @Roles(Role.OWNER, Role.MANAGER)
   @ApiOperation({ summary: 'Paketni yangilash' })
   async update(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() data: UpdateVenuePackageDto,
   ) {
-    return this.venuePackagesService.update(id, data);
+    return this.venuePackagesService.update(venueId, id, data);
   }
 
   @Delete(':id')
   @Roles(Role.OWNER)
   @ApiOperation({ summary: 'Paketni o\'chirish' })
-  async remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.venuePackagesService.remove(id);
+  async remove(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.venuePackagesService.remove(venueId, id);
   }
 }

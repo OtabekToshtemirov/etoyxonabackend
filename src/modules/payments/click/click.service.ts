@@ -4,11 +4,12 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import { Payment } from '../entities/payment.entity';
 import { VenuePaymentSettings } from '../entities/venue-payment-settings.entity';
 import { Booking } from '../../bookings/entities/booking.entity';
+import { nextPaymentNumber } from '../../../common/utils/sequence.util';
 
 /**
  * Click Merchant API integratsiyasi (per-venue)
@@ -33,6 +34,7 @@ export class ClickService {
     private readonly bookingRepo: Repository<Booking>,
     @InjectRepository(VenuePaymentSettings)
     private readonly settingsRepo: Repository<VenuePaymentSettings>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async isConfiguredForVenue(venueId: string): Promise<boolean> {
@@ -58,6 +60,13 @@ export class ClickService {
       where: { id: bookingId, venueId },
     });
     if (!booking) throw new BadRequestException('Buyurtma topilmadi');
+
+    // Click faqat UZS bilan ishlaydi. Boshqa valyuta bo'lsa rad etamiz.
+    if (booking.currency !== 'UZS') {
+      throw new BadRequestException(
+        "Click to'lovi faqat UZS valyutadagi bronlar uchun mavjud",
+      );
+    }
 
     const settings = await this.getVenueSettings(venueId);
 
@@ -280,8 +289,10 @@ export class ClickService {
   }
 
   private async generatePaymentNumber(): Promise<string> {
-    const year = new Date().getFullYear();
-    const count = await this.paymentRepo.count();
-    return `CLICK-${year}-${String(count + 1).padStart(4, '0')}`;
+    // Use shared sequence to guarantee atomic, unique numbering across
+    // concurrent webhooks and other payment paths.
+    const num = await nextPaymentNumber(this.dataSource);
+    // Replace PAY- prefix with CLICK- to keep human-readable origin
+    return num.replace(/^PAY-/, 'CLICK-');
   }
 }

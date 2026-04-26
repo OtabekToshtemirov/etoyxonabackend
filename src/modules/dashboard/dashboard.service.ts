@@ -78,15 +78,17 @@ export class DashboardService {
       .take(5)
       .getMany();
 
-    // Chart Data: Expenses by Category
+    // Chart Data: Expenses by Category — group by id (name kategoriya bo'yicha takrorlanmasin)
     const expensesByCategory = await this.expenseRepo
       .createQueryBuilder('expense')
-      .leftJoinAndSelect('expense.category', 'category')
-      .select('category.name', 'name')
+      .leftJoin('expense.category', 'category')
+      .select('category.id', 'id')
+      .addSelect('category.name', 'name')
       .addSelect('SUM(expense.amount)', 'value')
       .where('expense.venueId = :venueId', { venueId })
       .andWhere('expense.expenseDate >= :monthStart', { monthStart })
-      .groupBy('category.name')
+      .groupBy('category.id')
+      .addGroupBy('category.name')
       .getRawMany();
 
     // Chart Data: Top Packages
@@ -104,14 +106,17 @@ export class DashboardService {
       .getRawMany();
 
     // Chart Data: Revenue vs Expense (Daily for current month)
+    // Timezone: paid_at is timestamptz. Convert to Asia/Tashkent before extracting DATE
+    // so kechqurun UTC paid_at correctly maps to next day in UZ time.
+    const tz = 'Asia/Tashkent';
     const dailyIncome = await this.paymentRepo
       .createQueryBuilder('payment')
-      .select('DATE(payment.paidAt)', 'date')
+      .select(`DATE(payment.paid_at AT TIME ZONE '${tz}')`, 'date')
       .addSelect('SUM(payment.amount)', 'revenue')
       .where('payment.venueId = :venueId', { venueId })
       .andWhere('payment.status = :status', { status: 'completed' })
       .andWhere('payment.paidAt >= :monthStart', { monthStart })
-      .groupBy('DATE(payment.paidAt)')
+      .groupBy(`DATE(payment.paid_at AT TIME ZONE '${tz}')`)
       .getRawMany();
 
     const dailyExpense = await this.expenseRepo

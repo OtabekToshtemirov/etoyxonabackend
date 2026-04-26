@@ -44,15 +44,19 @@ export class MenuController {
   @Patch('categories/:id')
   @Roles(Role.OWNER, Role.MANAGER)
   async updateCategory(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() data: UpdateMenuCategoryDto,
   ) {
-    return this.menuService.updateCategory(id, data);
+    return this.menuService.updateCategory(venueId, id, data);
   }
   @Delete('categories/:id')
   @Roles(Role.OWNER, Role.MANAGER)
-  async removeCategory(@Param('id', ParseUUIDPipe) id: string) {
-    return this.menuService.removeCategory(id);
+  async removeCategory(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.menuService.removeCategory(venueId, id);
   }
 
   // ─── Items ──────────────
@@ -75,22 +79,29 @@ export class MenuController {
   }
 
   @Get('items/:id')
-  async findOneItem(@Param('id', ParseUUIDPipe) id: string) {
-    return this.menuService.findOneItem(id);
+  async findOneItem(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.menuService.findOneItem(venueId, id);
   }
 
   @Patch('items/:id')
   @Roles(Role.OWNER, Role.MANAGER)
   async updateItem(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() data: UpdateMenuItemDto,
   ) {
-    return this.menuService.updateItem(id, data);
+    return this.menuService.updateItem(venueId, id, data);
   }
   @Delete('items/:id')
   @Roles(Role.OWNER, Role.MANAGER)
-  async removeItem(@Param('id', ParseUUIDPipe) id: string) {
-    return this.menuService.removeItem(id);
+  async removeItem(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.menuService.removeItem(venueId, id);
   }
 
   // ─── Packages ───────────
@@ -111,23 +122,30 @@ export class MenuController {
   }
 
   @Get('packages/:id')
-  async findOnePackage(@Param('id', ParseUUIDPipe) id: string) {
-    return this.menuService.findOnePackage(id);
+  async findOnePackage(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.menuService.findOnePackage(venueId, id);
   }
 
   @Patch('packages/:id')
   @Roles(Role.OWNER, Role.MANAGER)
   async updatePackage(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() data: any,
   ) {
-    return this.menuService.updatePackage(id, data);
+    return this.menuService.updatePackage(venueId, id, data);
   }
 
   @Delete('packages/:id')
   @Roles(Role.OWNER, Role.MANAGER)
-  async removePackage(@Param('id', ParseUUIDPipe) id: string) {
-    return this.menuService.removePackage(id);
+  async removePackage(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.menuService.removePackage(venueId, id);
   }
 
   // ─── Package Items ──────
@@ -135,18 +153,21 @@ export class MenuController {
   @Roles(Role.OWNER, Role.MANAGER)
   @ApiOperation({ summary: 'Paketga taom qo\'shish' })
   async addPackageItem(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
     @Param('packageId', ParseUUIDPipe) packageId: string,
     @Body() data: any,
   ) {
-    return this.menuService.addPackageItem(packageId, data);
+    return this.menuService.addPackageItem(venueId, packageId, data);
   }
 
   @Delete('packages/:packageId/items/:itemId')
   @Roles(Role.OWNER, Role.MANAGER)
   @ApiOperation({ summary: 'Paketdan taomni olib tashlash' })
   async removePackageItem(
+    @Param('venueId', ParseUUIDPipe) venueId: string,
+    @Param('packageId', ParseUUIDPipe) packageId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
   ) {
-    return this.menuService.removePackageItem(itemId);
+    return this.menuService.removePackageItem(venueId, packageId, itemId);
   }
 }

@@ -160,16 +160,18 @@ export class AnalyticsService {
   }
 
   private async getMonthlyTrend(venueId: string, since: Date) {
+    // Convert paid_at to Asia/Tashkent for correct month bucketing
+    const monthExpr = "TO_CHAR(p.paid_at AT TIME ZONE 'Asia/Tashkent', 'YYYY-MM')";
     const result = await this.paymentRepo
       .createQueryBuilder('p')
-      .select("TO_CHAR(p.paidAt, 'YYYY-MM')", 'month')
+      .select(monthExpr, 'month')
       .addSelect('SUM(p.amount)', 'revenue')
       .where('p.venueId = :venueId', { venueId })
       .andWhere('p.status = :status', { status: 'completed' })
       .andWhere('p.paymentType = :type', { type: 'payment' })
       .andWhere('p.paidAt >= :since', { since })
-      .groupBy("TO_CHAR(p.paidAt, 'YYYY-MM')")
-      .orderBy("TO_CHAR(p.paidAt, 'YYYY-MM')", 'ASC')
+      .groupBy(monthExpr)
+      .orderBy(monthExpr, 'ASC')
       .getRawMany();
 
     return result.map((r) => ({

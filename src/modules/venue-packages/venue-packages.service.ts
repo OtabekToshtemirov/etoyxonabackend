@@ -44,7 +44,7 @@ export class VenuePackagesService {
       }
     }
 
-    return this.findOne(savedPackage.id);
+    return this.findOne(venueId, savedPackage.id);
   }
 
   async findAll(venueId: string) {
@@ -55,19 +55,20 @@ export class VenuePackagesService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(venueId: string, id: string) {
     const pkg = await this.packageRepo.findOne({
-      where: { id },
+      where: { id, venueId },
       relations: ['items', 'items.menuItem', 'items.venueService'],
     });
     if (!pkg) throw new NotFoundException('Paket topilmadi');
     return pkg;
   }
 
-  async update(id: string, data: UpdateVenuePackageDto) {
-    const pkg = await this.findOne(id);
+  async update(venueId: string, id: string, data: UpdateVenuePackageDto) {
+    const pkg = await this.findOne(venueId, id);
     const { items, ...packageData } = data;
 
+    delete (packageData as any).venueId;
     Object.assign(pkg, packageData);
     await this.packageRepo.save(pkg);
 
@@ -94,12 +95,12 @@ export class VenuePackagesService {
       }
     }
 
-    return this.findOne(id);
+    return this.findOne(venueId, id);
   }
 
-  async remove(id: string) {
-    const pkg = await this.findOne(id);
-    await this.packageRepo.softDelete(id);
-    return { message: 'Paket o\'chirildi' };
+  async remove(venueId: string, id: string) {
+    await this.findOne(venueId, id);
+    await this.packageRepo.softDelete({ id, venueId });
+    return { message: "Paket o'chirildi" };
   }
 }
